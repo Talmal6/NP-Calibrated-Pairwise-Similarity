@@ -1,28 +1,32 @@
 from __future__ import annotations
 import numpy as np
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
-from .base import MethodResult
-from ..utils.timing import time_ms
-from ..utils.metrics import get_metrics_at_fpr
+from .base import BaseMethod
+from typing import Optional
 
 
-class LDAMethod:
+class LDAMethod(BaseMethod):
     name = "LDA"
     needs_weights = False
     needs_seed = False
 
-    def run(self, H0: np.ndarray, H1: np.ndarray, alpha: float, weights=None, seed=None) -> MethodResult:
-        X_tr = np.vstack([H0, H1])
-        y_tr = np.hstack([np.zeros(len(H0)), np.ones(len(H1))])
+    def __init__(self):
+        self.clf = None
 
-        clf = LinearDiscriminantAnalysis(solver="lsqr", shrinkage="auto")
-        clf.fit(X_tr, y_tr)
+    def fit(
+        self,
+        H0_train: np.ndarray,
+        H1_train: np.ndarray,
+        *,
+        weights: Optional[np.ndarray] = None,
+        seed: Optional[int] = None,
+    ) -> "LDAMethod":
+        X_tr = np.vstack([H0_train, H1_train])
+        y_tr = np.hstack([np.zeros(len(H0_train)), np.ones(len(H1_train))])
 
-        scores0 = clf.decision_function(H0)
+        self.clf = LinearDiscriminantAnalysis(solver="lsqr", shrinkage="auto")
+        self.clf.fit(X_tr, y_tr)
+        return self
 
-        def infer_h1():
-            return clf.decision_function(H1)
-
-        scores1, dt = time_ms(infer_h1, reps=50, warmup=1)
-        tpr, fpr = get_metrics_at_fpr(scores0, scores1, alpha, tie_mode="ge")
-        return MethodResult(tpr=tpr, fpr=fpr, time_ms=dt)
+    def score(self, X: np.ndarray) -> np.ndarray:
+        return self.clf.decision_function(X).astype(np.float32)

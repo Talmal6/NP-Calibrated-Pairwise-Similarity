@@ -1,8 +1,7 @@
 from __future__ import annotations
 import numpy as np
-from .base import MethodResult
-from ..utils.timing import time_ms
-from ..utils.metrics import get_metrics_at_fpr
+from .base import BaseMethod
+from typing import Optional
 
 try:
     from xgboost import XGBClassifier
@@ -11,7 +10,7 @@ except Exception:
     HAS_XGB = False
 
 
-class XGBoostLightMethod:
+class XGBoostLightMethod(BaseMethod):
     name = "XGBoost"
     needs_weights = False
     needs_seed = False
@@ -19,12 +18,20 @@ class XGBoostLightMethod:
     def __init__(self):
         if not HAS_XGB:
             raise ImportError("xgboost is not available")
+        self.clf = None
 
-    def run(self, H0: np.ndarray, H1: np.ndarray, alpha: float, weights=None, seed=None) -> MethodResult:
-        X_tr = np.vstack([H0, H1])
-        y_tr = np.hstack([np.zeros(len(H0)), np.ones(len(H1))])
+    def fit(
+        self,
+        H0_train: np.ndarray,
+        H1_train: np.ndarray,
+        *,
+        weights: Optional[np.ndarray] = None,
+        seed: Optional[int] = None,
+    ) -> "XGBoostLightMethod":
+        X_tr = np.vstack([H0_train, H1_train])
+        y_tr = np.hstack([np.zeros(len(H0_train)), np.ones(len(H1_train))])
 
-        clf = XGBClassifier(
+        self.clf = XGBClassifier(
             n_estimators=30,
             max_depth=3,
             learning_rate=0.1,
@@ -33,13 +40,8 @@ class XGBoostLightMethod:
             use_label_encoder=False,
             eval_metric="logloss",
         )
-        clf.fit(X_tr, y_tr)
+        self.clf.fit(X_tr, y_tr)
+        return self
 
-        scores0 = clf.predict_proba(H0)[:, 1]
-
-        def infer_h1():
-            return clf.predict_proba(H1)[:, 1]
-
-        scores1, dt = time_ms(infer_h1, reps=10, warmup=1)
-        tpr, fpr = get_metrics_at_fpr(scores0, scores1, alpha, tie_mode="ge")
-        return MethodResult(tpr=tpr, fpr=fpr, time_ms=dt)
+    def score(self, X: np.ndarray) -> np.ndarray:
+        return self.clf.predict_proba(X)[:, 1].astype(np.float32)

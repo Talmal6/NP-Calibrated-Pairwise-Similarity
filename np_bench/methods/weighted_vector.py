@@ -1,26 +1,34 @@
 from __future__ import annotations
 import numpy as np
-from .base import MethodResult
-from ..utils.timing import time_ms
-from ..utils.metrics import get_metrics_at_fpr
+from .base import BaseMethod
+from typing import Optional
 
-class VectorWeightedMethod:
+
+class VectorWeightedMethod(BaseMethod):
     name = "Vec (Wgt)"
     needs_weights = True
     needs_seed = False
 
-    def run(self, H0: np.ndarray, H1: np.ndarray, alpha: float, weights=None, seed=None) -> MethodResult:
+    def __init__(self, weights: Optional[np.ndarray] = None):
+        self.weights = weights
+        self.w_normalized = None
+
+    def fit(
+        self,
+        H0_train: np.ndarray,
+        H1_train: np.ndarray,
+        *,
+        weights: Optional[np.ndarray] = None,
+        seed: Optional[int] = None,
+    ) -> "VectorWeightedMethod":
         if weights is None:
-            raise ValueError("weights is required")
+            raise ValueError("weights is required for VectorWeightedMethod")
 
         w = weights.astype(np.float32)
-        w = w / (w.mean() + 1e-9)
+        self.w_normalized = w / (w.mean() + 1e-9)
+        return self
 
-        scores0 = H0 @ w
-
-        def infer_h1():
-            return H1 @ w
-
-        scores1, dt = time_ms(infer_h1, reps=20, warmup=1)
-        tpr, fpr = get_metrics_at_fpr(scores0, scores1, alpha, tie_mode="ge")
-        return MethodResult(tpr=tpr, fpr=fpr, time_ms=dt)
+    def score(self, X: np.ndarray) -> np.ndarray:
+        if self.w_normalized is None:
+            raise ValueError("fit() must be called before score()")
+        return (X @ self.w_normalized).astype(np.float32)

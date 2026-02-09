@@ -1,154 +1,335 @@
+# NP-Calibrated Pairwise Similarity
 
-# Multi-Dimensional Threshold Benchmark (NP-Style)
+A research-grade framework for **pairwise semantic similarity / duplicate detection**
+under a **Neyman–Pearson (NP) constraint**, with explicit control over
+**false positive rate (FPR)**.
 
-A framework for benchmarking **classification and decision rules under a Neyman–Pearson (NP) constraint** (fixing $FPR \approx \alpha$ to maximize $TPR$) in **high-dimensional embedding spaces**.
-
-The project compares classical ML models against **vector-threshold**, **M-of-N**, and **AND-box** rules, with explicit control over false-positive rates and inference latency.
-
----
-
-## 🎯 Problem Setting
-
-**Objective:** Distinguish between two classes under a strict False Positive Rate constraint.
-
-* **Hypotheses:**
-    * $H_0$: Negative / Non-duplicate
-    * $H_1$: Positive / Duplicate
-* **Constraint:** Target False-Positive Rate (FPR) $\alpha$.
-
-**The Evaluation Protocol:**
-1.  **Calibration:** Thresholds are learned using **$H_0$ data only**.
-2.  **Constraint:** Enforce $FPR \le \alpha$ on the validation set.
-3.  **Measurement:** Evaluate **TPR**, **FPR**, and **Inference Time (ms)** on the test set.
+The framework is designed for **high-dimensional embedding features**
+and evaluates classical ML models alongside custom
+**multi-dimensional thresholding rules**, using a clean
+**train / calibration / evaluation** protocol.
 
 ---
 
-## 📐 Feature Representation
+## Motivation
 
-The input consists of paired embeddings $(U, V)$ where $U, V \in \mathbb{R}^d$.
+In pairwise semantic tasks (e.g. duplicate question detection, semantic cache reuse),
+**false positives are costly**:
+- wrong cache hits
+- incorrect reuse
+- semantic drift
 
-**Preprocessing pipeline:**
-1.  **L2 Normalization:** Normalize each embedding to unit length.
-2.  **Hadamard Features:** Construct the element-wise product feature vector $X$:
-    $$X = U \odot V$$
+Instead of maximizing accuracy or AUC, this project enforces:
 
-**Key Property:**
-The sum of the Hadamard features equals the cosine similarity, providing a strict baseline within the same feature space:
-$$\sum_{i=1}^{d} X_i = \text{cosine}(U, V)$$
+> **FPR ≤ α**, then maximizes **TPR**
+
+This matches real-world decision systems far better than unconstrained classifiers.
 
 ---
 
-## 📂 Repository Structure
+## Problem Setup
 
-```text
-Multi_Dim_Threshold/
-│
-├── np_bench/
-│   ├── data/          # Data loading, Hadamard construction, & balancing
-│   ├── utils/         # Metrics, timing decorators, plotting, IO
-│   ├── methods/       # Decision rules & model implementations
-│   └── experiments/   # Reproducible experiment logic
-│
-├── outputs/           # Auto-generated artifacts (Plots, CSVs, Logs)
-└── README.md
+Given:
+- Paired inputs `(x₁, x₂)`
+- Binary label:
+  - `H0` – non-duplicate
+  - `H1` – duplicate
+- Target false-positive rate `α`
 
+We evaluate decision rules that:
+1. Learn parameters from **training data**
+2. Calibrate an NP threshold using **negative calibration data only**
+3. Are evaluated on a **held-out test set**
+
+Metrics:
+- TPR (recall on H1)
+- FPR (measured on eval, not assumed)
+- Inference time (ms)
+
+---
+
+## Feature Representation
+
+Each input pair contains embeddings `(U, V)`.
+
+Processing pipeline:
+1. L2-normalize embeddings
+2. Construct **Hadamard features**:
 ```
 
-### Key Modules
+X = U ⊙ V
 
-* **`np_bench/methods`**: Contains isolated implementations of each algorithm. All methods adhere to a unified interface:
-* `fit(H0, H1, alpha, ...)`  `predict`
-* Returns: `(TPR, FPR, time_ms)`
+```
+3. Property:
+```
 
+sum(X) = cosine(U, V)
 
-* **`np_bench/experiments`**: Self-contained experiment scripts (no method-specific logic). Handles sweeping, logging, and visualization.
+````
+
+This makes cosine similarity a strict baseline within the same feature space.
 
 ---
 
-## 🚀 Supported Methods
+## Dataset Format
+
+Input is a `.pkl` file containing either:
+- A list of samples, or
+- A dict with a split key (default: `train`)
+
+Each sample is a dict:
+```python
+{
+"q1_emb": np.ndarray,
+"q2_emb": np.ndarray,
+"is_duplicate": int  # {0,1}
+}
+````
+
+---
+
+## Repository Structure
+
+```
+np_bench/
+│
+├── data/
+│   └── quora_embeddings.py      # loading + feature construction
+│
+├── utils/
+│   ├── split.py                 # train / calib / eval splitting
+│   ├── metrics.py               # NP metrics
+│   ├── timing.py                # inference timing
+│   ├── fisher.py                # Fisher score feature ranking
+│   ├── plotting.py
+│   └── io.py
+│
+├── methods/
+│   ├── cosine.py
+│   ├── weighted_vector.py
+│   ├── naive_bayes.py
+│   ├── logistic_regression.py
+│   ├── lda.py
+│   ├── xgboost.py
+│   ├── tiny_mlp.py
+│   ├── andbox.py                # AND-box rules
+│   └── base.py                  # BaseMethod + NP calibration
+│
+└── experiments/
+    ├── dims_sweep/              # sweep feature dimension
+    └── n_sweep/                 # sweep sample size
+```
+
+---
+
+## Evaluation Protocol (Important)
+
+Each trial uses **three disjoint sets per class**:
+
+* **Train**
+
+  * Fit model parameters
+  * Learn weights / rules
+* **Calibration**
+
+  * Contains **H0 only** for NP threshold calibration
+* **Evaluation**
+
+  * Final measurement of TPR / FPR / time
+
+⚠️ **No threshold is ever tuned on evaluation data.**
+⚠️ **NP calibration uses negatives only.**
+
+This avoids data leakage and makes FPR claims meaningful.
+
+---
+
+## Methods Evaluated
 
 ### Baselines
 
-* **Cosine**: Sum of Hadamard features (standard similarity).
-* **Vec (Wgt)**: Linear score utilizing Fisher weights.
+* **Cosine** – sum of Hadamard features
+* **Vector-Weighted** – linear score using Fisher weights
 
 ### Classical ML
 
-* **Naive Bayes**: Gaussian NB with Log-Likelihood Ratio (LLR) scoring.
-* **Logistic Regression**: Standard linear classification.
-* **LDA**: Linear Discriminant Analysis with shrinkage (optimized for high-dim).
-* **XGBoost (Light)**: Shallow trees, single-thread forced (for low-latency simulation).
-* **Tiny MLP**: Lightweight fully connected neural network.
+* **Naive Bayes** (Gaussian, LLR scoring)
+* **Logistic Regression**
+* **LDA** (shrinkage, high-dimensional safe)
+* **XGBoost (Light)**
+* **Tiny MLP**
 
 ### Custom Decision Rules
 
-* **M-of-N (Weighted)**: Optimizes per-dimension thresholds for weighted voting logic.
-* **AND-Box (HC)**: Sparse AND-box optimization via Hill Climbing.
-* **AND-Box (Weighted)**: Weighted dimension selection variant of the AND-box.
+* **AndBox-HC** – sparse AND-box via hill climbing
+* **AndBox-Wgt** – weighted dimension selection
+
+All methods are calibrated to the same target FPR.
 
 ---
 
-## 🧪 Experiments
+## Experiments
 
-To reproduce results, use the module syntax `python -m np_bench...`.
+### 1️⃣ Dimension Sweep (`dims_sweep`)
 
-### 1. Dimension Sweep (`dims_sweep`)
+**Goal:**
+Measure robustness and scaling as feature dimension increases.
 
-Evaluates how performance scales with feature dimension .
+**Setup:**
 
-* **Setup:** Fixed sample size (), sweep .
-* **Execution:**
+* Fixed samples per class
+* Sweep `d ∈ {8,16,32,64,128,256,512,1024}`
+
+**Run:**
+
 ```bash
 python -m np_bench.experiments.dims_sweep.run \
   --pkl np_bench/data/quora_question_pairs_with_embeddings.pkl \
-  --n_samples 1000 \
+  --n_train 400 \
+  --n_calib 400 \
+  --n_eval 2000 \
   --alpha 0.05 \
   --n_trials 3
-
 ```
 
+**Optional (sweep one split while sweeping d):**
 
+```bash
+python -m np_bench.experiments.dims_sweep.run \
+  --pkl np_bench/data/quora_question_pairs_with_embeddings.pkl \
+  --sweep train \
+  --n_list 100,200,500,1000 \
+  --n_calib 400 \
+  --n_eval 2000 \
+  --alpha 0.05 \
+  --n_trials 3
+```
 
-### 2. Sample Size Sweep (`n_sweep`)
+Outputs:
 
-Evaluates robustness relative to the number of training samples.
+* `benchmark_tpr_final.png`
+* `benchmark_fpr_final.png`
+* `benchmark_train_tpr.png`
+* `benchmark_train_fpr.png`
+* `benchmark_time_final.png`
+* `results.csv`
+* `summary.json`
 
-* **Setup:** Fixed dimension (), sweep .
-* **Execution:**
+---
+
+### 2️⃣ Sample Size Sweep (`n_sweep`)
+
+**Goal:**
+Measure performance vs. available data at fixed dimension.
+
+**Setup:**
+
+* Fixed `d` (default: 1024)
+* Sweep number of samples per class
+
+**Run (no sweep, fixed sizes):**
+
 ```bash
 python -m np_bench.experiments.n_sweep.run \
   --pkl np_bench/data/quora_question_pairs_with_embeddings.pkl \
   --d 1024 \
-  --n_list 100,200,500,1000,2000 \
+  --sweep none \
+  --n_train 400 \
+  --n_calib 400 \
+  --n_eval 2000 \
   --alpha 0.05 \
   --n_trials 3
-
 ```
 
+**Run (sweep one split):**
 
+```bash
+python -m np_bench.experiments.n_sweep.run \
+  --pkl np_bench/data/quora_question_pairs_with_embeddings.pkl \
+  --d 1024 \
+  --sweep train \
+  --n_list 100,200,500,1000,2000 \
+  --n_calib 400 \
+  --n_eval 2000 \
+  --alpha 0.05 \
+  --n_trials 3
+```
+
+**Run (sweep total per class and split by fractions):**
+
+```bash
+python -m np_bench.experiments.n_sweep.run \
+  --pkl np_bench/data/quora_question_pairs_with_embeddings.pkl \
+  --d 1024 \
+  --sweep total \
+  --n_list 200,500,1000,2000 \
+  --train_frac 0.2 \
+  --calib_frac 0.2 \
+  --alpha 0.05 \
+  --n_trials 3
+```
+
+Parameters:
+* `--sweep` – which quantity `n_list` controls: `none|train|calib|eval|total`
+* `--n_train` – samples per class in training set (used when not swept)
+* `--n_calib` – samples per class in calibration set (H0 only; used when not swept)
+* `--n_eval` – samples per class in evaluation set (used when not swept)
+* `--train_frac` – fraction of total for training (only with `--sweep total`)
+* `--calib_frac` – fraction of total for calibration (only with `--sweep total`)
 
 ---
 
-## 📊 Output Artifacts
+## Output Format
 
-Experiments automatically generate the following in the `outputs/` directory:
+### `results.csv`
 
-| File | Description |
-| --- | --- |
-| `results.csv` | Raw metrics for every trial (see schema below). |
-| `summary.json` | Metadata, full config, and aggregate stats. |
-| `*_tpr_final.png` | Visualization of TPR vs. Variable (Dim/N). |
-| `*_time_final.png` | Visualization of Inference Time vs. Variable. |
+One row per:
 
-**CSV Schema:**
-`experiment`, `trial`, `seed`, `d`, `n_samples_per_class`, `alpha`, `method`, `tpr`, `fpr`, `time_ms`
+* trial
+* method
+* configuration
+
+Includes:
+
+* `tpr`
+* `fpr`
+* `train_tpr`
+* `train_fpr`
+* `time_ms`
+
+### `summary.json`
+
+Stores:
+
+* experiment configuration
+* dataset reference
+* NP parameters
 
 ---
 
-## ✅ Design Principles & Status
+## Design Principles
 
-* **Strict NP Calibration:** Thresholds are derived strictly from null-hypothesis () data.
-* **No Data Leakage:** rigorous train/test splits.
-* **Latency Aware:** Explicit inference-time measurement included in benchmarks.
-* **Reproducibility:** Seed control and configuration serialization.
+* Explicit NP calibration
+* No evaluation leakage
+* High-dimensional safe methods
+* Inference-time measured separately
+* Modular, reproducible experiments
+
+---
+
+## Intended Use
+
+* Pairwise semantic similarity
+* Duplicate detection
+* Semantic cache admission
+* Risk-controlled reuse in RAG / LLM systems
+
+---
+
+## Status
+
+✔ Modularized
+✔ NP-correct protocol
+✔ Reproducible
+✔ Ready for research / GitHub / extension
 

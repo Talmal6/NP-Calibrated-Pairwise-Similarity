@@ -1,10 +1,19 @@
 from __future__ import annotations
+
+from dataclasses import dataclass
 import numpy as np
-from .base import MethodResult
-from ..utils.timing import time_ms
+
+from .base import BaseMethod
+from typing import Optional
 
 
-def _andbox_core(
+@dataclass(frozen=True)
+class AndBoxModel:
+    t: np.ndarray          # shape (d,)
+    active: np.ndarray     # shape (k,)
+
+
+def _fit_andbox_core(
     H0: np.ndarray,
     H1: np.ndarray,
     weights: np.ndarray,
@@ -12,7 +21,11 @@ def _andbox_core(
     seed: int,
     weighted_pick: bool,
     steps: int = 4000,
-) -> MethodResult:
+) -> AndBoxModel:
+    """
+    Fit AND-box on the provided data (intended: TRAIN ONLY).
+    Returns a model (threshold vector t and active dims).
+    """
     rng = np.random.default_rng(seed)
     N0, d = H0.shape
     max_fp = int(np.floor(alpha * N0))
@@ -34,6 +47,7 @@ def _andbox_core(
 
     t = np.full(d, global_min, dtype=np.float32)
 
+    # heuristic init: pick beta_star so that ALL(active) constraint has approx FPR<=alpha (on H0)
     beta_star = 0.001
     lo, hi = 0.0, 1.0
     H0_a = H0[:, active]
@@ -102,37 +116,161 @@ def _andbox_core(
         if no_improve >= 600:
             break
 
-    def infer_h1():
-        return np.all(H1 >= best_t, axis=1)
-
-    _, dt = time_ms(infer_h1, reps=50, warmup=1)
-
-    tpr = float(best_tp) / max(1, len(H1))
-    fpr = float(best_fp) / max(1, len(H0))
-    return MethodResult(tpr=tpr, fpr=fpr, time_ms=dt)
+    return AndBoxModel(t=best_t.astype(np.float32), active=active.astype(np.int32))
 
 
-class AndBoxHCMethod:
-    name = "AND-Box (HC)"
+def score_andbox_margin(model: AndBoxModel, X: np.ndarray) -> np.ndarray:
+    """
+    Continuous score for NP calibration:
+        margin(x) = min_{i in active} (x_i - t_i)
+    Larger is "more positive". The natural accept boundary is margin>=0,
+    but NP calibration will learn a threshold on calib(H0).
+    """
+    a = model.active
+    return np.min(X[:, a] - model.t[a], axis=1).astype(np.float32)
+
+
+class AndBoxHCMethod(BaseMethod):
+    """AND-Box with hard-coded (HC) variant."""
+    name = "AndBox-HC"
     needs_weights = True
     needs_seed = True
 
-    def run(self, H0: np.ndarray, H1: np.ndarray, alpha: float, weights=None, seed=None) -> MethodResult:
+    def __init__(self):
+        self.model = None
+
+    def fit(
+        self,
+        H0_train: np.ndarray,
+        H1_train: np.ndarray,
+        *,
+        weights: Optional[np.ndarray] = None,
+        seed: Optional[int] = None,
+    ) -> "AndBoxHCMethod":
+        # Note: alpha must be passed via the run() method
+        # This fit method is a no-op placeholder
         if weights is None:
-            raise ValueError("AndBoxHCMethod requires weights")
+            raise ValueError("weights is required for AndBoxHCMethod")
         if seed is None:
-            raise ValueError("AndBoxHCMethod requires seed")
-        return _andbox_core(H0, H1, weights, alpha, seed, weighted_pick=False, steps=4000)
+            raise ValueError("seed is required for AndBoxHCMethod")
+        return self
+
+    def score(self, X: np.ndarray) -> np.ndarray:
+        if self.model is None:
+            raise ValueError("fit() must be called before score()")
+        return score_andbox_margin(self.model, X)
+
+    def run(
+        self,
+        H0_train: np.ndarray,
+        H1_train: np.ndarray,
+        H0_calib: np.ndarray,
+        H0_eval: np.ndarray,
+        H1_eval: np.ndarray,
+        alpha: float,
+        *,
+        weights: Optional[np.ndarray] = None,
+        seed: Optional[int] = None,
+        tie_mode: str = "ge",
+    ):
+        """Override run to handle alpha-dependent fitting."""
+        from .base import MethodResult, _np_eval_from_calib
+        import time
+
+        if weights is None:
+            raise ValueError("weights is required for AndBoxHCMethod")
+        if seed is None:
+            raise ValueError("seed is required for AndBoxHCMethod")
+
+        # Fit with alpha
+        self.model = _fit_andbox_core(
+            H0_train, H1_train, weights, alpha, seed, weighted_pick=False, steps=4000
+        )
+
+        # Score
+        s0_cal = self.score(H0_calib)
+        s0_ev = self.score(H0_eval)
+        s1_ev = self.score(H1_eval)
+
+        # NP metrics
+        tpr, fpr, _ = _np_eval_from_calib(s0_cal, s0_ev, s1_ev, alpha, tie_mode=tie_mode)
+
+        # Inference timing
+        t0 = time.perf_counter()
+        _ = self.score(H1_eval)
+        dt_ms = (time.perf_counter() - t0) * 1000.0
+
+        return MethodResult(tpr=tpr, fpr=fpr, time_ms=float(dt_ms))
 
 
-class AndBoxWgtMethod:
-    name = "AND-Box (Wgt)"
+class AndBoxWgtMethod(BaseMethod):
+    """AND-Box with weighted (WGT) variant."""
+    name = "AndBox-Wgt"
     needs_weights = True
     needs_seed = True
 
-    def run(self, H0: np.ndarray, H1: np.ndarray, alpha: float, weights=None, seed=None) -> MethodResult:
+    def __init__(self):
+        self.model = None
+
+    def fit(
+        self,
+        H0_train: np.ndarray,
+        H1_train: np.ndarray,
+        *,
+        weights: Optional[np.ndarray] = None,
+        seed: Optional[int] = None,
+    ) -> "AndBoxWgtMethod":
+        # Note: alpha must be passed via the run() method
+        # This fit method is a no-op placeholder
         if weights is None:
-            raise ValueError("AndBoxWgtMethod requires weights")
+            raise ValueError("weights is required for AndBoxWgtMethod")
         if seed is None:
-            raise ValueError("AndBoxWgtMethod requires seed")
-        return _andbox_core(H0, H1, weights, alpha, seed, weighted_pick=True, steps=4000)
+            raise ValueError("seed is required for AndBoxWgtMethod")
+        return self
+
+    def score(self, X: np.ndarray) -> np.ndarray:
+        if self.model is None:
+            raise ValueError("fit() must be called before score()")
+        return score_andbox_margin(self.model, X)
+
+    def run(
+        self,
+        H0_train: np.ndarray,
+        H1_train: np.ndarray,
+        H0_calib: np.ndarray,
+        H0_eval: np.ndarray,
+        H1_eval: np.ndarray,
+        alpha: float,
+        *,
+        weights: Optional[np.ndarray] = None,
+        seed: Optional[int] = None,
+        tie_mode: str = "ge",
+    ):
+        """Override run to handle alpha-dependent fitting."""
+        from .base import MethodResult, _np_eval_from_calib
+        import time
+
+        if weights is None:
+            raise ValueError("weights is required for AndBoxWgtMethod")
+        if seed is None:
+            raise ValueError("seed is required for AndBoxWgtMethod")
+
+        # Fit with alpha
+        self.model = _fit_andbox_core(
+            H0_train, H1_train, weights, alpha, seed, weighted_pick=True, steps=4000
+        )
+
+        # Score
+        s0_cal = self.score(H0_calib)
+        s0_ev = self.score(H0_eval)
+        s1_ev = self.score(H1_eval)
+
+        # NP metrics
+        tpr, fpr, _ = _np_eval_from_calib(s0_cal, s0_ev, s1_ev, alpha, tie_mode=tie_mode)
+
+        # Inference timing
+        t0 = time.perf_counter()
+        _ = self.score(H1_eval)
+        dt_ms = (time.perf_counter() - t0) * 1000.0
+
+        return MethodResult(tpr=tpr, fpr=fpr, time_ms=float(dt_ms))
