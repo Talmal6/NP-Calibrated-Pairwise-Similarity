@@ -38,19 +38,29 @@ def main():
     ap.add_argument("--n_trials", type=int, default=3)
 
     ap.add_argument("--d", type=int, default=1024)
-    ap.add_argument("--n_list", type=str, default="100,200,500,1000,2000")
+    ap.add_argument("--n_list", type=str, default="500,1000,2000",
+                    help="Comma-separated total samples per class to sweep over")
 
-    # for each n in n_list we do: train/calib/eval sizes per class
-    ap.add_argument("--n_train", type=int, default=200)
-    ap.add_argument("--n_calib", type=int, default=200)
-    ap.add_argument("--n_eval", type=int, default=1000)
-
-    ap.add_argument("--sweep", type=str, choices=["none", "train", "calib", "eval", "total"], default="none")
-    ap.add_argument("--train_frac", type=float, default=0.2)
-    ap.add_argument("--calib_frac", type=float, default=0.2)
+    ap.add_argument("--train_frac", type=float, default=0.2,
+                    help="Fraction of n for training (0-1)")
+    ap.add_argument("--calib_frac", type=float, default=0.2,
+                    help="Fraction of n for calibration (0-1)")
+    ap.add_argument("--eval_frac", type=float, default=0.6,
+                    help="Fraction of n for evaluation (0-1)")
 
     ap.add_argument("--run_name", type=str, default=None)
     args = ap.parse_args()
+
+    # Validate fractions
+    frac_sum = args.train_frac + args.calib_frac + args.eval_frac
+    if not np.isclose(frac_sum, 1.0, atol=1e-6):
+        raise ValueError(f"train_frac + calib_frac + eval_frac must equal 1.0, got {frac_sum:.6f}")
+    if not (0.0 < args.train_frac < 1.0):
+        raise ValueError(f"train_frac must be in (0,1), got {args.train_frac}")
+    if not (0.0 < args.calib_frac < 1.0):
+        raise ValueError(f"calib_frac must be in (0,1), got {args.calib_frac}")
+    if not (0.0 < args.eval_frac < 1.0):
+        raise ValueError(f"eval_frac must be in (0,1), got {args.eval_frac}")
 
     n_list = [int(x.strip()) for x in args.n_list.split(",") if x.strip()]
     run_dir = make_run_dir(base_dir=str(Path("outputs") / "n_sweep"), run_name=args.run_name)
@@ -72,52 +82,24 @@ def main():
     results = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
     csv_rows: List[Dict[str, Any]] = []
 
-    if args.sweep == "none":
-        sweep_values = [None]
-        sweep_n_list = []
-    else:
-        sweep_values = n_list
-        sweep_n_list = n_list
-
-    def resolve_sizes(n_tag):
-        n_train = args.n_train
-        n_calib = args.n_calib
-        n_eval = args.n_eval
-
-        if args.sweep == "train":
-            n_train = int(n_tag)
-        elif args.sweep == "calib":
-            n_calib = int(n_tag)
-        elif args.sweep == "eval":
-            n_eval = int(n_tag)
-        elif args.sweep == "total":
-            total = int(n_tag)
-            if not (0.0 < args.train_frac < 1.0 and 0.0 <= args.calib_frac < 1.0):
-                raise ValueError("train_frac must be in (0,1) and calib_frac in [0,1).")
-            if args.train_frac + args.calib_frac >= 1.0:
-                raise ValueError("train_frac + calib_frac must be < 1.")
-            n_train = int(np.floor(total * args.train_frac))
-            n_calib = int(np.floor(total * args.calib_frac))
-            n_eval = int(total - n_train - n_calib)
-            if n_eval <= 0:
-                raise ValueError("Total too small for derived split sizes.")
+    def resolve_sizes(n_total: int):
+        n_train = int(np.floor(n_total * args.train_frac))
+        n_calib = int(np.floor(n_total * args.calib_frac))
+        n_eval = n_total - n_train - n_calib
+        if n_eval <= 0:
+            raise ValueError(f"n_total={n_total} too small for the given fractions.")
         return n_train, n_calib, n_eval
 
     print(f"\n=== n_sweep (train/calib/eval) fixed d={args.d} @ FPR≈{args.alpha} ===")
-    if args.sweep == "none":
-        print(f"sweep=none, trials={args.n_trials}")
-    else:
-        print(f"sweep={args.sweep}, n_list={sweep_n_list}, trials={args.n_trials}")
-    print(f"fixed: n_train={args.n_train}, n_calib={args.n_calib}, n_eval={args.n_eval}")
-    if args.sweep == "total":
-        print(f"fractions: train_frac={args.train_frac}, calib_frac={args.calib_frac}")
+    print(f"n_list={n_list}, trials={args.n_trials}")
+    print(f"fractions: train={args.train_frac}, calib={args.calib_frac}, eval={args.eval_frac}")
     print(f"run_dir={run_dir}")
 
-    for n_tag in sweep_values:
+    for n_tag in n_list:
         n_train, n_calib, n_eval = resolve_sizes(n_tag)
 
         for trial in range(args.n_trials):
-            seed = 42 + 1000 * (n_tag if n_tag is not None else 0) + trial
+            seed = 42 + 1000 * n_tag + trial
 
             sp = split_by_class_triplet(
                 X_full, y_full,
@@ -173,7 +155,7 @@ def main():
                     "trial": trial,
                     "seed": seed,
                     "d": args.d,
-                    "n_tag": (n_tag if n_tag is not None else "fixed"),
+                    "n_tag": n_tag,
                     "n_train": n_train,
                     "n_calib": n_calib,
                     "n_eval": n_eval,
@@ -186,7 +168,7 @@ def main():
                     "time_ms": result.time_ms,
                 })
 
-        print(f"\n[n_tag={n_tag if n_tag is not None else 'fixed'}]")
+        print(f"\n[n={n_tag}  train={n_train} calib={n_calib} eval={n_eval}]")
         for name in method_names:
             if name not in results:
                 continue
@@ -198,7 +180,7 @@ def main():
             print(f"  {name:<14}  TPR={tpr_mu:.4f}  FPR={fpr_mu:.4f}  train_TPR={tr_tpr_mu:.4f}  train_FPR={tr_fpr_mu:.4f}  time={tm_mu:.3f} ms")
 
     # plots (grouped bars)
-    x_labels = [str(n) if n is not None else "fixed" for n in sweep_values]
+    x_labels = [str(n) for n in n_list]
     tpr_series = {}
     train_tpr_series = {}
     train_fpr_series = {}
@@ -208,48 +190,48 @@ def main():
         if name not in results:
             continue
         tpr_series[name] = (
-            [float(np.mean(results[name]["tpr"][n])) for n in sweep_values],
-            [float(np.std(results[name]["tpr"][n])) for n in sweep_values],
+            [float(np.mean(results[name]["tpr"][n])) for n in n_list],
+            [float(np.std(results[name]["tpr"][n])) for n in n_list],
         )
         train_tpr_series[name] = (
-            [float(np.mean(results[name]["train_tpr"][n])) for n in sweep_values],
-            [float(np.std(results[name]["train_tpr"][n])) for n in sweep_values],
+            [float(np.mean(results[name]["train_tpr"][n])) for n in n_list],
+            [float(np.std(results[name]["train_tpr"][n])) for n in n_list],
         )
         train_fpr_series[name] = (
-            [float(np.mean(results[name]["train_fpr"][n])) for n in sweep_values],
-            [float(np.std(results[name]["train_fpr"][n])) for n in sweep_values],
+            [float(np.mean(results[name]["train_fpr"][n])) for n in n_list],
+            [float(np.std(results[name]["train_fpr"][n])) for n in n_list],
         )
         time_series[name] = (
-            [float(np.mean(results[name]["time_ms"][n])) for n in sweep_values],
-            [float(np.std(results[name]["time_ms"][n])) for n in sweep_values],
+            [float(np.mean(results[name]["time_ms"][n])) for n in n_list],
+            [float(np.std(results[name]["time_ms"][n])) for n in n_list],
         )
 
     plot_grouped_bars(
         x_labels=x_labels,
         series_dict=tpr_series,
         ylabel=f"TPR @ FPR≈{args.alpha}",
-        title=f"TPR vs n_tag (sweep={args.sweep}, fixed d={args.d})",
+        title=f"TPR vs n (fixed d={args.d})",
         output_path=str(run_dir / f"tpr_vs_n_d{args.d}.png"),
     )
     plot_grouped_bars(
         x_labels=x_labels,
         series_dict=time_series,
         ylabel="Inference time (ms)",
-        title=f"Inference time vs n_tag (sweep={args.sweep}, fixed d={args.d})",
+        title=f"Inference time vs n (fixed d={args.d})",
         output_path=str(run_dir / f"time_vs_n_d{args.d}.png"),
     )
     plot_grouped_bars(
         x_labels=x_labels,
         series_dict=train_tpr_series,
         ylabel=f"Train TPR @ FPR≈{args.alpha}",
-        title=f"Train TPR vs n_tag (sweep={args.sweep}, fixed d={args.d})",
+        title=f"Train TPR vs n (fixed d={args.d})",
         output_path=str(run_dir / f"train_tpr_vs_n_d{args.d}.png"),
     )
     plot_grouped_bars(
         x_labels=x_labels,
         series_dict=train_fpr_series,
         ylabel="Train FPR",
-        title=f"Train FPR vs n_tag (sweep={args.sweep}, fixed d={args.d})",
+        title=f"Train FPR vs n (fixed d={args.d})",
         output_path=str(run_dir / f"train_fpr_vs_n_d{args.d}.png"),
     )
 
@@ -270,13 +252,10 @@ def main():
         "alpha": args.alpha,
         "d": args.d,
         "n_trials": args.n_trials,
-        "n_list": sweep_n_list,
-        "sweep": args.sweep,
-        "n_train": args.n_train,
-        "n_calib": args.n_calib,
-        "n_eval": args.n_eval,
+        "n_list": n_list,
         "train_frac": args.train_frac,
         "calib_frac": args.calib_frac,
+        "eval_frac": args.eval_frac,
         "methods": method_names,
         "note": "NP threshold calibrated on calib(H0) only; eval metrics on eval set.",
     })

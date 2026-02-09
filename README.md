@@ -245,33 +245,28 @@ Measure robustness and scaling as feature dimension increases.
 
 **Setup:**
 
-* Fixed samples per class
 * Sweep `d ∈ {8,16,32,64,128,256,512,1024}`
+* For each `n` in `--n_list`, split into train/calib/eval by fractions
 
 **Run:**
 
 ```bash
 python -m np_bench.experiments.dims_sweep.run \
   --pkl np_bench/data/quora_question_pairs_with_embeddings.pkl \
-  --n_train 400 \
-  --n_calib 400 \
-  --n_eval 2000 \
+  --n_list 500,1000,2000 \
+  --train_frac 0.2 \
+  --calib_frac 0.2 \
+  --eval_frac 0.6 \
   --alpha 0.05 \
   --n_trials 3
 ```
 
-**Optional (sweep one split while sweeping d):**
-
-```bash
-python -m np_bench.experiments.dims_sweep.run \
-  --pkl np_bench/data/quora_question_pairs_with_embeddings.pkl \
-  --sweep train \
-  --n_list 100,200,500,1000 \
-  --n_calib 400 \
-  --n_eval 2000 \
-  --alpha 0.05 \
-  --n_trials 3
-```
+Parameters:
+* `--n_list` – comma-separated total samples per class to sweep
+* `--train_frac` – fraction of each `n` for training (default: 0.2)
+* `--calib_frac` – fraction of each `n` for calibration (default: 0.2)
+* `--eval_frac` – fraction of each `n` for evaluation (default: 0.6)
+* Must satisfy: `train_frac + calib_frac + eval_frac = 1.0`
 
 Outputs:
 
@@ -293,57 +288,28 @@ Measure performance vs. available data at fixed dimension.
 **Setup:**
 
 * Fixed `d` (default: 1024)
-* Sweep number of samples per class
+* Sweep total samples per class via `--n_list`, split by fractions
 
-**Run (no sweep, fixed sizes):**
-
-```bash
-python -m np_bench.experiments.n_sweep.run \
-  --pkl np_bench/data/quora_question_pairs_with_embeddings.pkl \
-  --d 1024 \
-  --sweep none \
-  --n_train 400 \
-  --n_calib 400 \
-  --n_eval 2000 \
-  --alpha 0.05 \
-  --n_trials 3
-```
-
-**Run (sweep one split):**
+**Run:**
 
 ```bash
 python -m np_bench.experiments.n_sweep.run \
   --pkl np_bench/data/quora_question_pairs_with_embeddings.pkl \
   --d 1024 \
-  --sweep train \
-  --n_list 100,200,500,1000,2000 \
-  --n_calib 400 \
-  --n_eval 2000 \
-  --alpha 0.05 \
-  --n_trials 3
-```
-
-**Run (sweep total per class and split by fractions):**
-
-```bash
-python -m np_bench.experiments.n_sweep.run \
-  --pkl np_bench/data/quora_question_pairs_with_embeddings.pkl \
-  --d 1024 \
-  --sweep total \
   --n_list 200,500,1000,2000 \
   --train_frac 0.2 \
   --calib_frac 0.2 \
+  --eval_frac 0.6 \
   --alpha 0.05 \
   --n_trials 3
 ```
 
 Parameters:
-* `--sweep` – which quantity `n_list` controls: `none|train|calib|eval|total`
-* `--n_train` – samples per class in training set (used when not swept)
-* `--n_calib` – samples per class in calibration set (H0 only; used when not swept)
-* `--n_eval` – samples per class in evaluation set (used when not swept)
-* `--train_frac` – fraction of total for training (only with `--sweep total`)
-* `--calib_frac` – fraction of total for calibration (only with `--sweep total`)
+* `--n_list` – comma-separated total samples per class to sweep
+* `--train_frac` – fraction of each `n` for training (default: 0.2)
+* `--calib_frac` – fraction of each `n` for calibration (default: 0.2)
+* `--eval_frac` – fraction of each `n` for evaluation (default: 0.6)
+* Must satisfy: `train_frac + calib_frac + eval_frac = 1.0`
 
 ---
 

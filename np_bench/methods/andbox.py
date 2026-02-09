@@ -192,15 +192,26 @@ class AndBoxHCMethod(BaseMethod):
         s0_ev = self.score(H0_eval)
         s1_ev = self.score(H1_eval)
 
-        # NP metrics
-        tpr, fpr, _ = _np_eval_from_calib(s0_cal, s0_ev, s1_ev, alpha, tie_mode=tie_mode)
+        # NP metrics (eval)
+        tpr, fpr, thresh = _np_eval_from_calib(s0_cal, s0_ev, s1_ev, alpha, tie_mode=tie_mode)
+
+        # Train metrics (reuse same threshold from calib)
+        s0_tr = self.score(H0_train)
+        s1_tr = self.score(H1_train)
+        if tie_mode == "gt":
+            train_tpr = float(np.mean(s1_tr > thresh))
+            train_fpr = float(np.mean(s0_tr > thresh))
+        else:
+            train_tpr = float(np.mean(s1_tr >= thresh))
+            train_fpr = float(np.mean(s0_tr >= thresh))
 
         # Inference timing
         t0 = time.perf_counter()
         _ = self.score(H1_eval)
         dt_ms = (time.perf_counter() - t0) * 1000.0
 
-        return MethodResult(tpr=tpr, fpr=fpr, time_ms=float(dt_ms))
+        return MethodResult(tpr=tpr, fpr=fpr, time_ms=float(dt_ms),
+                            train_tpr=train_tpr, train_fpr=train_fpr)
 
 
 class AndBoxWgtMethod(BaseMethod):
@@ -265,12 +276,23 @@ class AndBoxWgtMethod(BaseMethod):
         s0_ev = self.score(H0_eval)
         s1_ev = self.score(H1_eval)
 
-        # NP metrics
-        tpr, fpr, _ = _np_eval_from_calib(s0_cal, s0_ev, s1_ev, alpha, tie_mode=tie_mode)
+        # NP metrics (eval)
+        tpr, fpr, thresh = _np_eval_from_calib(s0_cal, s0_ev, s1_ev, alpha, tie_mode=tie_mode)
+
+        # Train metrics (reuse same threshold from calib)
+        s0_tr = self.score(H0_train)
+        s1_tr = self.score(H1_train)
+        if tie_mode == "gt":
+            train_tpr = float(np.mean(s1_tr > thresh))
+            train_fpr = float(np.mean(s0_tr > thresh))
+        else:
+            train_tpr = float(np.mean(s1_tr >= thresh))
+            train_fpr = float(np.mean(s0_tr >= thresh))
 
         # Inference timing
         t0 = time.perf_counter()
         _ = self.score(H1_eval)
         dt_ms = (time.perf_counter() - t0) * 1000.0
 
-        return MethodResult(tpr=tpr, fpr=fpr, time_ms=float(dt_ms))
+        return MethodResult(tpr=tpr, fpr=fpr, time_ms=float(dt_ms),
+                            train_tpr=train_tpr, train_fpr=train_fpr)
