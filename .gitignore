@@ -5,3 +5,4 @@ quora_question_pairs_with_embeddings.pkl
 
 quora_question_pairs_with_embeddings.pkl.train.X.npy
 quora_question_pairs_with_embeddings.pkl.train.y.npy
+run_grand_2_benchmark.sbatch
