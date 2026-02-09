@@ -88,6 +88,74 @@ Each sample is a dict:
 
 ---
 
+## Dataset Download
+
+The dataset (`quora_question_pairs_with_embeddings.pkl`) is hosted on HuggingFace.
+It is **~10 GB** and is not tracked by git.
+
+### Option 1: Python (`huggingface_hub`)
+
+```bash
+pip install huggingface_hub
+```
+
+```python
+from huggingface_hub import hf_hub_download
+
+hf_hub_download(
+    repo_id="malmatal/quora_question_pairs_with_embeddings",
+    filename="quora_question_pairs_with_embeddings.pkl",
+    repo_type="dataset",
+    local_dir="np_bench/data",
+)
+```
+
+### Option 2: HuggingFace CLI
+
+```bash
+pip install huggingface_hub
+huggingface-cli download \
+    malmatal/quora_question_pairs_with_embeddings \
+    quora_question_pairs_with_embeddings.pkl \
+    --repo-type dataset \
+    --local-dir np_bench/data
+```
+
+### Option 3: `datasets` library
+
+```bash
+pip install datasets
+```
+
+```python
+from datasets import load_dataset
+
+ds = load_dataset("malmatal/quora_question_pairs_with_embeddings")
+```
+
+### Option 4: `wget` / direct URL
+
+```bash
+wget -P np_bench/data/ \
+    https://huggingface.co/datasets/malmatal/quora_question_pairs_with_embeddings/resolve/main/quora_question_pairs_with_embeddings.pkl
+```
+
+### Option 5: Git LFS
+
+```bash
+git lfs install
+git clone https://huggingface.co/datasets/malmatal/quora_question_pairs_with_embeddings np_bench/data/hf_repo
+mv np_bench/data/hf_repo/quora_question_pairs_with_embeddings.pkl np_bench/data/
+rm -rf np_bench/data/hf_repo
+```
+
+After downloading, the experiments expect the file at:
+```
+np_bench/data/quora_question_pairs_with_embeddings.pkl
+```
+
+---
+
 ## Repository Structure
 
 ```
