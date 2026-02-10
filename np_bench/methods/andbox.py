@@ -146,13 +146,17 @@ class AndBoxHCMethod(BaseMethod):
         *,
         weights: Optional[np.ndarray] = None,
         seed: Optional[int] = None,
+        alpha: float = 0.05  
     ) -> "AndBoxHCMethod":
-        # Note: alpha must be passed via the run() method
-        # This fit method is a no-op placeholder
         if weights is None:
             raise ValueError("weights is required for AndBoxHCMethod")
         if seed is None:
             raise ValueError("seed is required for AndBoxHCMethod")
+
+        self.model = _fit_andbox_core(
+            H0_train, H1_train, weights, alpha, seed,
+            weighted_pick=False, steps=4000
+        )
         return self
 
     def score(self, X: np.ndarray) -> np.ndarray:
@@ -230,13 +234,19 @@ class AndBoxWgtMethod(BaseMethod):
         *,
         weights: Optional[np.ndarray] = None,
         seed: Optional[int] = None,
+        alpha: float = 0.05,
     ) -> "AndBoxWgtMethod":
-        # Note: alpha must be passed via the run() method
-        # This fit method is a no-op placeholder
         if weights is None:
             raise ValueError("weights is required for AndBoxWgtMethod")
         if seed is None:
             raise ValueError("seed is required for AndBoxWgtMethod")
+
+        self._weights = weights
+        self._seed = seed
+        self.model = _fit_andbox_core(
+            H0_train, H1_train, weights, alpha, seed,
+            weighted_pick=True, steps=4000
+        )
         return self
 
     def score(self, X: np.ndarray) -> np.ndarray:
