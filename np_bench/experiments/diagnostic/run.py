@@ -32,7 +32,6 @@ from np_bench.methods import (
     AndBoxHCMethod,
     AndBoxWgtMethod,
 )
-from np_bench.methods.base import _np_eval_from_calib
 from np_bench.utils import get_fisher_scores, save_json, save_csv_rows
 from np_bench.utils.split import split_by_class_triplet
 
@@ -99,8 +98,7 @@ def main():
     ap.add_argument("--method", type=str, required=True,
                     help=f"Method name. Choices: {list(METHOD_REGISTRY.keys())}")
 
-    ap.add_argument("--train_frac", type=float, default=0.2)
-    ap.add_argument("--calib_frac", type=float, default=0.3)
+    ap.add_argument("--train_frac", type=float, default=0.5)
     ap.add_argument("--eval_frac", type=float, default=0.5)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--tie_mode", type=str, default="ge",
@@ -108,10 +106,10 @@ def main():
     args = ap.parse_args()
 
     # ── validate ─────────────────────────────────────────────────────────
-    frac_sum = args.train_frac + args.calib_frac + args.eval_frac
+    frac_sum = args.train_frac + args.eval_frac
     if not np.isclose(frac_sum, 1.0, atol=1e-6):
         raise ValueError(
-            f"train_frac + calib_frac + eval_frac must equal 1.0, got {frac_sum:.6f}"
+            f"train_frac + eval_frac must equal 1.0, got {frac_sum:.6f}"
         )
 
     if args.method not in METHOD_REGISTRY:
@@ -122,20 +120,19 @@ def main():
 
     # ── resolve split sizes ──────────────────────────────────────────────
     n_train = int(np.floor(args.n * args.train_frac))
-    n_calib = int(np.floor(args.n * args.calib_frac))
-    n_eval  = args.n - n_train - n_calib
+    n_eval  = args.n - n_train
     if n_eval <= 0:
         raise ValueError(f"n={args.n} too small for the given fractions.")
 
     # ── output directory ─────────────────────────────────────────────────
     safe_name = _safe_filename(args.method)
-    out_dir = Path("outputs") / "diagnostic_run" / safe_name
+    out_dir = Path("outputs") / "diagnostic_run" / safe_name / f"seed_{args.seed}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"\n{'=' * 60}")
-    print(f"  NP Diagnostic – method={args.method}")
+    print(f"  Diagnostic – method={args.method}")
     print(f"  d={args.d}, n={args.n}  "
-          f"(train={n_train}, calib={n_calib}, eval={n_eval})")
+          f"(train={n_train}, eval={n_eval})")
     print(f"  alpha={args.alpha}, seed={args.seed}, tie_mode={args.tie_mode}")
     print(f"  output → {out_dir}")
     print(f"{'=' * 60}\n")
@@ -154,13 +151,12 @@ def main():
     # ── split ────────────────────────────────────────────────────────────
     sp = split_by_class_triplet(
         X_full, y_full,
-        n_train=n_train, n_calib=n_calib, n_eval=n_eval,
+        n_train=n_train, n_eval=n_eval,
         seed=args.seed,
     )
 
     H0_train = sp.H0_train[:, top_k]
     H1_train = sp.H1_train[:, top_k]
-    H0_calib = sp.H0_calib[:, top_k]
     H0_eval  = sp.H0_eval[:, top_k]
     H1_eval  = sp.H1_eval[:, top_k]
 
@@ -180,15 +176,18 @@ def main():
     scores: Dict[str, np.ndarray] = OrderedDict()
     scores["H0_train"] = method.score(H0_train)
     scores["H1_train"] = method.score(H1_train)
-    scores["H0_calib"] = method.score(H0_calib)
     scores["H0_eval"]  = method.score(H0_eval)
     scores["H1_eval"]  = method.score(H1_eval)
 
-    # ── NP calibration: extract threshold ────────────────────────────────
-    tpr_eval, fpr_eval, threshold = _np_eval_from_calib(
-        scores["H0_calib"], scores["H0_eval"], scores["H1_eval"],
-        args.alpha, tie_mode=args.tie_mode,
-    )
+    # ── threshold from H0_train ──────────────────────────────────────────
+    threshold = float(np.quantile(scores["H0_train"], 1.0 - args.alpha))
+
+    if args.tie_mode == "gt":
+        tpr_eval = float(np.mean(scores["H1_eval"] > threshold))
+        fpr_eval = float(np.mean(scores["H0_eval"] > threshold))
+    else:
+        tpr_eval = float(np.mean(scores["H1_eval"] >= threshold))
+        fpr_eval = float(np.mean(scores["H0_eval"] >= threshold))
 
     # ── train metrics using the same threshold ───────────────────────────
     if args.tie_mode == "gt":
@@ -211,7 +210,6 @@ def main():
         "d": args.d,
         "n": args.n,
         "n_train": n_train,
-        "n_calib": n_calib,
         "n_eval": n_eval,
         "alpha": args.alpha,
         "seed": args.seed,

@@ -2,7 +2,8 @@ grand2.py
 grand2_bechmark_samples.py
 outputs
 quora_question_pairs_with_embeddings.pkl
-
+NeighborCache/data/
+np_bench/data
 quora_question_pairs_with_embeddings.pkl.train.X.npy
 quora_question_pairs_with_embeddings.pkl.train.y.npy
 run_grand_2_benchmark.sbatch

@@ -254,19 +254,17 @@ Measure robustness and scaling as feature dimension increases.
 python -m np_bench.experiments.dims_sweep.run \
   --pkl np_bench/data/quora_question_pairs_with_embeddings.pkl \
   --n_list 500,1000,2000 \
-  --train_frac 0.2 \
-  --calib_frac 0.2 \
-  --eval_frac 0.6 \
+  --train_frac 0.5 \
+  --eval_frac 0.5 \
   --alpha 0.05 \
   --n_trials 3
 ```
 
 Parameters:
 * `--n_list` – comma-separated total samples per class to sweep
-* `--train_frac` – fraction of each `n` for training (default: 0.2)
-* `--calib_frac` – fraction of each `n` for calibration (default: 0.2)
-* `--eval_frac` – fraction of each `n` for evaluation (default: 0.6)
-* Must satisfy: `train_frac + calib_frac + eval_frac = 1.0`
+* `--train_frac` – fraction of each `n` for training (default: 0.5)
+* `--eval_frac` – fraction of each `n` for evaluation (default: 0.5)
+* Must satisfy: `train_frac + eval_frac = 1.0`
 
 Outputs:
 
@@ -297,19 +295,17 @@ python -m np_bench.experiments.n_sweep.run \
   --pkl np_bench/data/quora_question_pairs_with_embeddings.pkl \
   --d 1024 \
   --n_list 200,500,1000,2000 \
-  --train_frac 0.2 \
-  --calib_frac 0.2 \
-  --eval_frac 0.6 \
+  --train_frac 0.5 \
+  --eval_frac 0.5 \
   --alpha 0.05 \
   --n_trials 3
 ```
 
 Parameters:
 * `--n_list` – comma-separated total samples per class to sweep
-* `--train_frac` – fraction of each `n` for training (default: 0.2)
-* `--calib_frac` – fraction of each `n` for calibration (default: 0.2)
-* `--eval_frac` – fraction of each `n` for evaluation (default: 0.6)
-* Must satisfy: `train_frac + calib_frac + eval_frac = 1.0`
+* `--train_frac` – fraction of each `n` for training (default: 0.5)
+* `--eval_frac` – fraction of each `n` for evaluation (default: 0.5)
+* Must satisfy: `train_frac + eval_frac = 1.0`
 
 ---
 

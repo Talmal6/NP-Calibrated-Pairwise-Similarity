@@ -20,7 +20,7 @@ def make_run_dir(base_dir: str = "outputs", run_name: Optional[str] = None) -> P
         run_name = f"run_{ts}"
 
     run_dir = base / run_name
-    run_dir.mkdir(parents=True, exist_ok=False)
+    run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir
 
 

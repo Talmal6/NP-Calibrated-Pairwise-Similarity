@@ -41,24 +41,20 @@ def main():
     ap.add_argument("--n_list", type=str, default="500,1000,2000",
                     help="Comma-separated total samples per class to sweep over")
 
-    ap.add_argument("--train_frac", type=float, default=0.2,
+    ap.add_argument("--train_frac", type=float, default=0.5,
                     help="Fraction of n for training (0-1)")
-    ap.add_argument("--calib_frac", type=float, default=0.2,
-                    help="Fraction of n for calibration (0-1)")
-    ap.add_argument("--eval_frac", type=float, default=0.6,
+    ap.add_argument("--eval_frac", type=float, default=0.5,
                     help="Fraction of n for evaluation (0-1)")
 
     ap.add_argument("--run_name", type=str, default=None)
     args = ap.parse_args()
 
     # Validate fractions
-    frac_sum = args.train_frac + args.calib_frac + args.eval_frac
+    frac_sum = args.train_frac + args.eval_frac
     if not np.isclose(frac_sum, 1.0, atol=1e-6):
-        raise ValueError(f"train_frac + calib_frac + eval_frac must equal 1.0, got {frac_sum:.6f}")
+        raise ValueError(f"train_frac + eval_frac must equal 1.0, got {frac_sum:.6f}")
     if not (0.0 < args.train_frac < 1.0):
         raise ValueError(f"train_frac must be in (0,1), got {args.train_frac}")
-    if not (0.0 < args.calib_frac < 1.0):
-        raise ValueError(f"calib_frac must be in (0,1), got {args.calib_frac}")
     if not (0.0 < args.eval_frac < 1.0):
         raise ValueError(f"eval_frac must be in (0,1), got {args.eval_frac}")
 
@@ -84,36 +80,30 @@ def main():
 
     def resolve_sizes(n_total: int):
         n_train = int(np.floor(n_total * args.train_frac))
-        n_calib = int(np.floor(n_total * args.calib_frac))
-        n_eval = n_total - n_train - n_calib
+        n_eval = n_total - n_train
         if n_eval <= 0:
             raise ValueError(f"n_total={n_total} too small for the given fractions.")
-        return n_train, n_calib, n_eval
+        return n_train, n_eval
 
-    print(f"\n=== n_sweep (train/calib/eval) fixed d={args.d} @ FPR≈{args.alpha} ===")
+    print(f"\n=== n_sweep (train/eval) fixed d={args.d} @ FPR≈{args.alpha} ===")
     print(f"n_list={n_list}, trials={args.n_trials}")
-    print(f"fractions: train={args.train_frac}, calib={args.calib_frac}, eval={args.eval_frac}")
+    print(f"fractions: train={args.train_frac}, eval={args.eval_frac}")
     print(f"run_dir={run_dir}")
 
     for n_tag in n_list:
-        n_train, n_calib, n_eval = resolve_sizes(n_tag)
+        n_train, n_eval = resolve_sizes(n_tag)
 
         for trial in range(args.n_trials):
             seed = 42 + 1000 * n_tag + trial
 
             sp = split_by_class_triplet(
                 X_full, y_full,
-                n_train=n_train, n_calib=n_calib, n_eval=n_eval,
+                n_train=n_train, n_eval=n_eval,
                 seed=seed
             )
 
-            # additionally, enforce enough samples by also subsampling within each split to size=n if wanted
-            # Here n_list represents *overall difficulty*; simplest: use it to set n_eval etc. externally.
-            # If you want n to control total size, pass --n_train/--n_calib/--n_eval derived from n.
-
             H0_tr = sp.H0_train[:, top_k]
             H1_tr = sp.H1_train[:, top_k]
-            H0_ca = sp.H0_calib[:, top_k]
             H0_ev = sp.H0_eval[:, top_k]
             H1_ev = sp.H1_eval[:, top_k]
 
@@ -138,7 +128,7 @@ def main():
                 method_weights = w_d if name in ["Vec (Wgt)", "AndBox-HC", "AndBox-Wgt"] else None
                 result = method.run(
                     H0_tr, H1_tr,
-                    H0_ca, H0_ev, H1_ev,
+                    H0_ev, H1_ev,
                     args.alpha,
                     weights=method_weights,
                     seed=seed
@@ -157,7 +147,6 @@ def main():
                     "d": args.d,
                     "n_tag": n_tag,
                     "n_train": n_train,
-                    "n_calib": n_calib,
                     "n_eval": n_eval,
                     "alpha": args.alpha,
                     "method": name,
@@ -168,7 +157,7 @@ def main():
                     "time_ms": result.time_ms,
                 })
 
-        print(f"\n[n={n_tag}  train={n_train} calib={n_calib} eval={n_eval}]")
+        print(f"\n[n={n_tag}  train={n_train} eval={n_eval}]")
         for name in method_names:
             if name not in results:
                 continue
@@ -240,7 +229,7 @@ def main():
         csv_rows,
         fieldnames=[
             "experiment", "trial", "seed", "d", "n_tag",
-            "n_train", "n_calib", "n_eval", "alpha",
+            "n_train", "n_eval", "alpha",
             "method", "tpr", "fpr", "train_tpr", "train_fpr", "time_ms",
         ]
     )
@@ -254,10 +243,9 @@ def main():
         "n_trials": args.n_trials,
         "n_list": n_list,
         "train_frac": args.train_frac,
-        "calib_frac": args.calib_frac,
         "eval_frac": args.eval_frac,
         "methods": method_names,
-        "note": "NP threshold calibrated on calib(H0) only; eval metrics on eval set.",
+        "note": "Threshold from quantile(score(H0_train), 1-alpha); eval metrics on eval set.",
     })
 
     print(f"\n[Done] outputs at: {run_dir}")
