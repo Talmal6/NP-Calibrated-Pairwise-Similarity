@@ -18,12 +18,21 @@ from np_bench.utils import make_run_dir, save_csv_rows, save_json
 
 from .io_helpers import resolve_npz_path, load_npz, resolve_features
 from .methods import build_methods, needs_weights
-from .splits import split_indices_per_region, split_global
+from .splits import (
+    filter_global_split_by_score_range,
+    filter_region_splits_by_score_range,
+    split_indices_per_region,
+    split_global,
+)
 from .evaluation import fit_all_methods, evaluate_methods, evaluate_methods_global, aggregate_ranking
 from .display import print_trial_table, print_ranking
 
 NC_ROOT = ROOT / "NeighborCache"
 OUT_BASE = NC_ROOT / "outputs" / "region_local_threshold"
+
+REGION_KEY_ALIASES = {
+    "sem_bucket": "global_cluster",
+}
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
@@ -52,6 +61,15 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     ap.add_argument("--min_h0_eval", type=int, default=20)
     ap.add_argument("--min_h1_eval", type=int, default=20)
     ap.add_argument("--run_name", type=str, default=None)
+    ap.add_argument(
+        "--filter_policy",
+        type=str,
+        default="none",
+        choices=["none", "ambiguous_only"],
+        help="Shared split filter policy applied equally to train/calib/eval for all methods.",
+    )
+    ap.add_argument("--ambiguous_cos_min", type=float, default=0.7)
+    ap.add_argument("--ambiguous_cos_max", type=float, default=0.9)
 
     # StabilizedWhitenedCosine parameters
     ap.add_argument("--swc_k", type=int, default=64,
@@ -73,6 +91,12 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     # Cosine score local calibration head
     ap.add_argument("--cos_affine_calib", action="store_true", default=False)
     ap.add_argument(
+        "--precomputed_cosine",
+        action="store_true",
+        default=False,
+        help="Add explicit scalar-score baseline using precomputed cosine_to_anchor.",
+    )
+    ap.add_argument(
         "--cos_affine_grouping",
         type=str,
         default="region",
@@ -89,12 +113,21 @@ def main(argv: Optional[List[str]] = None) -> None:
     npz_path = resolve_npz_path(args.data)
     ds = load_npz(npz_path)
 
-    required = {args.region_key, "label"}
+    region_key = args.region_key
+    if region_key not in ds:
+        alias_key = REGION_KEY_ALIASES.get(region_key)
+        if alias_key in ds:
+            print(
+                f"[INFO] region_key='{region_key}' not found; using alias key='{alias_key}'"
+            )
+            region_key = alias_key
+
+    required = {region_key, "label"}
     miss = sorted(required - set(ds.keys()))
     if miss:
         raise ValueError(f"{npz_path} missing required arrays: {miss}; have={sorted(ds.keys())}")
 
-    region_id = ds[args.region_key].astype(np.int64, copy=False)
+    region_id = ds[region_key].astype(np.int64, copy=False)
     y = ds["label"].astype(np.int32, copy=False)
 
     feat_key, X_main, X_cos = resolve_features(ds)
@@ -110,10 +143,13 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     print("\n=== Region Threshold Benchmark ===")
     print(f"dataset_npz={npz_path}")
-    print(f"region_key={args.region_key} (unique={len(np.unique(region_id))})")
+    print(f"region_key={args.region_key} (resolved={region_key}, unique={len(np.unique(region_id))})")
     print(f"features={feat_key} rows={X_main.shape[0]} dim={X_main.shape[1]}")
     print(f"alpha={args.alpha} tie_mode={args.tie_mode} trials={args.n_trials} base_seed={args.seed}")
     print(f"tau_mode={args.tau_mode}")
+    print(f"filter_policy={args.filter_policy}")
+    if args.filter_policy == "ambiguous_only":
+        print(f"ambiguous_range=[{args.ambiguous_cos_min}, {args.ambiguous_cos_max}]")
     print(f"caps: train={args.n_train} calib={args.n_calib} eval={args.n_eval}")
     print(f"mins: min_h0_eval={args.min_h0_eval} min_h1_eval={args.min_h1_eval}")
     print(f"run_dir={run_dir}")
@@ -123,6 +159,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     trial_summary_rows: List[Dict[str, Any]] = []
     failures: Dict[str, List[str]] = defaultdict(list)
     configured_methods_last: List[str] = []
+    weighted_ensemble_meta_rows: List[Dict[str, Any]] = []
 
     for trial in range(args.n_trials):
         seed = args.seed + trial
@@ -137,8 +174,23 @@ def main(argv: Optional[List[str]] = None) -> None:
                 seed=seed,
             )
 
+            filter_stats_global: Dict[str, int] = {}
+            if args.filter_policy == "ambiguous_only":
+                if X_cos is None:
+                    raise RuntimeError(
+                        "filter_policy='ambiguous_only' requires cosine_to_anchor (X_cos), but it is unavailable"
+                    )
+                gs, filter_stats_global = filter_global_split_by_score_range(
+                    gs,
+                    score=X_cos[:, 0],
+                    score_min=args.ambiguous_cos_min,
+                    score_max=args.ambiguous_cos_max,
+                )
+
             H0_train = X_main[gs.H0_train]
             H1_train = X_main[gs.H1_train]
+            H0_calib_pure = X_main[gs.H0_calib]
+            H1_calib_pure = X_main[gs.H1_calib]
             H0_calib_eff = X_main[np.concatenate([gs.H0_train, gs.H0_calib])] \
                 if gs.H0_train.size > 0 else X_main[gs.H0_calib]
             H1_calib_eff = X_main[np.concatenate([gs.H1_train, gs.H1_calib])] \
@@ -148,11 +200,15 @@ def main(argv: Optional[List[str]] = None) -> None:
             H0_train_cos = X_cos[gs.H0_train] if X_cos is not None else None
             H1_train_cos = X_cos[gs.H1_train] if X_cos is not None else None
             if X_cos is not None:
+                H0_calib_pure_cos = X_cos[gs.H0_calib]
+                H1_calib_pure_cos = X_cos[gs.H1_calib]
                 H0_calib_eff_cos = X_cos[np.concatenate([gs.H0_train, gs.H0_calib])] \
                     if gs.H0_train.size > 0 else X_cos[gs.H0_calib]
                 H1_calib_eff_cos = X_cos[np.concatenate([gs.H1_train, gs.H1_calib])] \
                     if gs.H1_train.size > 0 else X_cos[gs.H1_calib]
             else:
+                H0_calib_pure_cos = None
+                H1_calib_pure_cos = None
                 H0_calib_eff_cos = None
                 H1_calib_eff_cos = None
 
@@ -162,6 +218,13 @@ def main(argv: Optional[List[str]] = None) -> None:
             print(f"  pooled_train:  n0={gs_stats['h0_train']} n1={gs_stats['h1_train']}")
             print(f"  pooled_calib:  n0={gs_stats['h0_calib']} n1={gs_stats['h1_calib']}")
             print(f"  pooled_eval:   n0={gs_stats['h0_eval']} n1={gs_stats['h1_eval']}")
+            if filter_stats_global:
+                print(
+                    "  post_filter_global: "
+                    f"train(n0={filter_stats_global['h0_train']},n1={filter_stats_global['h1_train']}) "
+                    f"calib(n0={filter_stats_global['h0_calib']},n1={filter_stats_global['h1_calib']}) "
+                    f"eval(n0={filter_stats_global['h0_eval']},n1={filter_stats_global['h1_eval']})"
+                )
             print(f"  regions (for macro stats only): {n_unique_regions}")
 
             if H0_calib_eff.shape[0] == 0 or H1_calib_eff.shape[0] == 0:
@@ -191,6 +254,13 @@ def main(argv: Optional[List[str]] = None) -> None:
                 except Exception as exc:
                     print(f"[WARN] Could not load CosineAffineCalib: {exc}")
 
+            if args.precomputed_cosine:
+                try:
+                    from np_bench.methods.precomputed_cosine import PrecomputedCosineMethod
+                    methods["PrecomputedCosine"] = PrecomputedCosineMethod()
+                except Exception as exc:
+                    print(f"[WARN] Could not load PrecomputedCosine: {exc}")
+
             method_names = list(methods.keys())
             configured_methods_last = method_names[:]
 
@@ -200,10 +270,14 @@ def main(argv: Optional[List[str]] = None) -> None:
                 H1_train=H1_train,
                 H0_calib_eff=H0_calib_eff,
                 H1_calib_eff=H1_calib_eff,
+                H0_calib_pure=H0_calib_pure,
+                H1_calib_pure=H1_calib_pure,
                 H0_train_cos=H0_train_cos,
                 H1_train_cos=H1_train_cos,
                 H0_calib_eff_cos=H0_calib_eff_cos,
                 H1_calib_eff_cos=H1_calib_eff_cos,
+                H0_calib_pure_cos=H0_calib_pure_cos,
+                H1_calib_pure_cos=H1_calib_pure_cos,
                 tie_mode=args.tie_mode,
                 tau_guardrail=args.tau_guardrail,
                 tau_guardrail_delta=args.tau_guardrail_delta,
@@ -213,6 +287,22 @@ def main(argv: Optional[List[str]] = None) -> None:
                 trial=trial,
                 failures=failures,
             )
+
+            # Persist trial-wise ensemble weights for auditability.
+            if "WeightedEnsemble" in methods and hasattr(methods["WeightedEnsemble"], "meta_w"):
+                we = methods["WeightedEnsemble"]
+                w = getattr(we, "meta_w", None)
+                judges = getattr(we, "judges", [])
+                if w is not None and judges:
+                    for j, wj in zip(judges, np.asarray(w).reshape(-1)):
+                        weighted_ensemble_meta_rows.append(
+                            {
+                                "trial": int(trial),
+                                "seed": int(seed),
+                                "judge": str(getattr(j, "name", type(j).__name__)),
+                                "weight": float(wj),
+                            }
+                        )
 
             trial_rows = evaluate_methods_global(
                 methods,
@@ -243,6 +333,21 @@ def main(argv: Optional[List[str]] = None) -> None:
                 min_h0_eval=args.min_h0_eval,
                 min_h1_eval=args.min_h1_eval,
             )
+
+            filter_stats_local: Dict[str, int] = {}
+            if args.filter_policy == "ambiguous_only":
+                if X_cos is None:
+                    raise RuntimeError(
+                        "filter_policy='ambiguous_only' requires cosine_to_anchor (X_cos), but it is unavailable"
+                    )
+                splits, filter_stats_local = filter_region_splits_by_score_range(
+                    splits,
+                    score=X_cos[:, 0],
+                    score_min=args.ambiguous_cos_min,
+                    score_max=args.ambiguous_cos_max,
+                    min_h0_eval=args.min_h0_eval,
+                    min_h1_eval=args.min_h1_eval,
+                )
 
             if len(splits) == 0:
                 raise RuntimeError(
@@ -278,6 +383,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                 H1_calib_eff_cos = None
 
             print(f"\n[trial={trial} seed={seed}] used_regions={len(splits)} split_stats={split_stats}")
+            if filter_stats_local:
+                print(f"  post_filter_stats={filter_stats_local}")
             if len(splits) < 5:
                 print(f"  [WARN] Only {len(splits)} region(s) evaluated. Results are high-variance.")
             print(f"  pooled_train: n0={H0_train.shape[0]} n1={H1_train.shape[0]}")
@@ -309,6 +416,13 @@ def main(argv: Optional[List[str]] = None) -> None:
                     methods["CosineAffineCalib"] = CosineAffineCalibMethod()
                 except Exception as exc:
                     print(f"[WARN] Could not load CosineAffineCalib: {exc}")
+
+            if args.precomputed_cosine:
+                try:
+                    from np_bench.methods.precomputed_cosine import PrecomputedCosineMethod
+                    methods["PrecomputedCosine"] = PrecomputedCosineMethod()
+                except Exception as exc:
+                    print(f"[WARN] Could not load PrecomputedCosine: {exc}")
 
             method_names = list(methods.keys())
             configured_methods_last = method_names[:]
@@ -364,6 +478,14 @@ def main(argv: Optional[List[str]] = None) -> None:
             )
 
         trial_summary_rows.extend(trial_rows)
+        if trial_rows and args.tau_mode != "global":
+            shared_counts = {int(r.get("shared_regions", r.get("ok_regions", 0))) for r in trial_rows}
+            if len(shared_counts) != 1:
+                raise RuntimeError(
+                    f"trial={trial}: comparability validation failed (inconsistent shared region counts): {sorted(shared_counts)}"
+                )
+            if next(iter(shared_counts)) <= 0:
+                raise RuntimeError(f"trial={trial}: comparability validation failed (no shared regions)")
         print_trial_table(trial_rows, alpha=float(args.alpha))
 
     # Aggregate ranking
@@ -378,10 +500,16 @@ def main(argv: Optional[List[str]] = None) -> None:
             "trial", "seed", "method", "region_key", "tau_mode", "tau", "tau_mean",
             "micro_tpr", "micro_fpr", "train_tpr", "train_fpr",
             "macro_tpr", "macro_fpr",
-            "ok_regions", "time_ms",
+            "ok_regions", "shared_regions", "dropped_regions_for_comparability",
+            "input_space", "time_ms",
         ],
     )
     save_json(run_dir / "ranking.json", {"ranking": ranking})
+    save_csv_rows(
+        run_dir / "weighted_ensemble_meta_weights.csv",
+        weighted_ensemble_meta_rows,
+        fieldnames=["trial", "seed", "judge", "weight"],
+    )
     save_json(
         run_dir / "notes.json",
         {
@@ -396,7 +524,11 @@ def main(argv: Optional[List[str]] = None) -> None:
             "tau_shrink_m": float(args.tau_shrink_m),
             "tau_guardrail": args.tau_guardrail,
             "tau_guardrail_delta": float(args.tau_guardrail_delta),
+            "filter_policy": args.filter_policy,
+            "ambiguous_cos_min": float(args.ambiguous_cos_min),
+            "ambiguous_cos_max": float(args.ambiguous_cos_max),
             "cos_affine_calib": bool(args.cos_affine_calib),
+            "precomputed_cosine": bool(args.precomputed_cosine),
             "cos_affine_grouping": args.cos_affine_grouping,
             "cos_affine_n_clusters": int(args.cos_affine_n_clusters),
             "swc_mode": args.swc_mode,
@@ -412,11 +544,30 @@ def main(argv: Optional[List[str]] = None) -> None:
                 "min_h0_eval": int(args.min_h0_eval),
                 "min_h1_eval": int(args.min_h1_eval),
             },
-            "methods": list(build_methods().keys()),
+            "methods": configured_methods_last,
             "methods_configured": configured_methods_last,
+            "method_input_spaces": {
+                str(r.get("method")): str(r.get("input_space", "unknown"))
+                for r in trial_summary_rows
+                if r.get("method")
+            },
             "methods_evaluated": sorted({str(r.get("method", "")) for r in trial_summary_rows if r.get("method")}),
+            "x_cos_used": bool(
+                X_cos is not None and any(str(r.get("input_space", "")) in {"scalar_score", "mixed"} for r in trial_summary_rows)
+            ),
+            "final_shared_region_count": int(
+                min(
+                    [int(r.get("shared_regions", r.get("ok_regions", 0))) for r in trial_summary_rows]
+                ) if trial_summary_rows else 0
+            ),
+            "regions_dropped_for_comparability": int(
+                max(
+                    [int(r.get("dropped_regions_for_comparability", 0)) for r in trial_summary_rows]
+                ) if trial_summary_rows else 0
+            ),
             "xgboost_available": bool(has_xgb),
             "cosine_feature_available": bool(X_cos is not None),
+            "weighted_ensemble_meta_weights_logged": bool(len(weighted_ensemble_meta_rows) > 0),
             "failures": failures,
         },
     )

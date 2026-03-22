@@ -23,6 +23,10 @@ if str(ROOT) not in sys.path:
 NC_ROOT = ROOT / "NeighborCache"
 OUT_BASE = NC_ROOT / "outputs" / "region_local_threshold"
 
+REGION_KEY_ALIASES = {
+    "sem_bucket": "global_cluster",
+}
+
 from np_bench.methods import (
     AndBoxHCMethod,
     AndBoxWgtMethod,
@@ -329,19 +333,28 @@ def main() -> None:
     npz_path, stats_path = resolve_npz_path(args.data)
     ds = load_npz(npz_path)
 
-    required = {args.region_key, "label"}
+    region_key = args.region_key
+    if region_key not in ds:
+        alias_key = REGION_KEY_ALIASES.get(region_key)
+        if alias_key in ds:
+            print(
+                f"[INFO] region_key='{region_key}' not found; using alias key='{alias_key}'"
+            )
+            region_key = alias_key
+
+    required = {region_key, "label"}
     miss = sorted(required - set(ds.keys()))
     if miss:
         raise ValueError(f"{npz_path} missing required arrays: {miss}; have={sorted(ds.keys())}")
 
-    region_id = ds[args.region_key].astype(np.int64, copy=False)
+    region_id = ds[region_key].astype(np.int64, copy=False)
     y = ds["label"].astype(np.int32, copy=False)
     X = resolve_features(ds)
 
     run_dir = make_run_dir(base_dir=str(OUT_BASE), run_name=args.run_name)
 
     print("\n=== VectorQ-like Region Threshold Benchmark ===")
-    print(f"region_key={args.region_key}")
+    print(f"region_key={args.region_key} (resolved={region_key})")
     print(f"dataset_npz={npz_path}")
     print(f"rows={X.shape[0]} dim={X.shape[1]}")
     print(f"alpha={args.alpha} tie_mode={args.tie_mode} trials={args.n_trials} base_seed={args.seed}")

@@ -15,12 +15,32 @@ if str(ROOT) not in sys.path:
 from np_bench.methods import get_default_methods
 
 
+_VALID_INPUT_SPACES = {"embedding", "scalar_score", "mixed"}
+
+
 def build_methods() -> Dict[str, Any]:
     methods: Dict[str, Any] = {}
     for method in get_default_methods():
         name = str(getattr(method, "name", type(method).__name__))
         methods[name] = method
     return methods
+
+
+def method_input_space(method: Any) -> str:
+    """Return declared method input space.
+
+    Supported spaces:
+      - "embedding": expects dense embedding matrix (N, D), D > 1
+      - "scalar_score": expects scalar precomputed score matrix (N, 1)
+      - "mixed": expects embedding matrix and may optionally consume alt matrix
+    """
+    space = str(getattr(method, "input_space", "embedding"))
+    if space not in _VALID_INPUT_SPACES:
+        raise ValueError(
+            f"Method {getattr(method, 'name', type(method).__name__)} has invalid input_space={space!r}; "
+            f"expected one of {sorted(_VALID_INPUT_SPACES)}"
+        )
+    return space
 
 
 def needs_weights(method: Any) -> bool:

@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .methods import method_train_required, needs_weights, needs_seed, try_fit_method
+from .methods import method_input_space, needs_weights, needs_seed, try_fit_method
 from .splits import RegionSplit, GlobalSplit
 
 
@@ -87,7 +87,19 @@ def _select_tau(
         raise ValueError("empty calibration scores")
 
     if guardrail == "none":
-        return float(np.quantile(s, 1.0 - alpha))
+        # Tie-aware empirical NP selection: choose the smallest threshold
+        # whose empirical FPR (under tie_mode) is <= alpha.
+        uniq, counts = np.unique(s, return_counts=True)
+        n = int(s.size)
+        cumsum = np.cumsum(counts)
+        for i, tau in enumerate(uniq):
+            if tie_mode == "gt":
+                k = int(n - cumsum[i])
+            else:
+                k = int(n - (cumsum[i - 1] if i > 0 else 0))
+            if (k / max(1, n)) <= alpha:
+                return float(tau)
+        return float("inf")
 
     uniq, counts = np.unique(s, return_counts=True)
     n = int(s.size)
@@ -171,121 +183,27 @@ def _score_method_with_routing(
     X_main_slice: np.ndarray,
     X_cos_slice: Optional[np.ndarray],
 ) -> np.ndarray:
-    """Score samples using the appropriate input routing.
+    space = method_input_space(method)
 
-    Args:
-        method: The method instance to score with
-        method_name: Name of the method (to check for WeightedEnsemble)
-        X_main_slice: Main feature matrix slice (embeddings)
-        X_cos_slice: Cosine feature matrix slice (Hadamard vectors), or None
-
-    Returns:
-        Score array for the input samples
-    """
-    if method_name == "WeightedEnsemble":
-        # WeightedEnsemble needs both matrices for per-judge routing
+    if space == "mixed":
         return method.score(X_main_slice, X_alt=X_cos_slice)
-    else:
-        # Regular methods use single matrix determined by their type
-        use_cos = method_name in {"Cosine", "CosineAffineCalib"}
-        X_use = X_cos_slice if (use_cos and X_cos_slice is not None) else X_main_slice
-        return method.score(X_use)
 
+    if space == "scalar_score":
+        if X_cos_slice is None:
+            raise ValueError(f"method={method_name} requires scalar_score input but X_cos is None")
+        x = np.asarray(X_cos_slice)
+        if x.ndim != 2 or x.shape[1] != 1:
+            raise ValueError(
+                f"method={method_name} expects scalar_score matrix with shape (N,1), got {x.shape}"
+            )
+        return method.score(x)
 
-def _compute_cosine_scores(
-    X_main: np.ndarray,
-    X_cos: Optional[np.ndarray] = None,
-) -> Optional[np.ndarray]:
-    """Compute cosine similarity scores for all samples.
-    
-    Args:
-        X_main: Main embeddings (N, D) - not used if X_cos is available
-        X_cos: Optional Hadamard product vectors (N, D) where sum = cosine
-        
-    Returns:
-        Array of cosine scores (N,) if X_cos is available, None otherwise
-    """
-    if X_cos is not None:
-        # Hadamard vectors: sum across features gives cosine
-        # This matches CosineMethod.score() implementation
-        scores = np.sum(X_cos.astype(np.float64, copy=False), axis=1)
-        scores = np.clip(scores, -1.0, 1.0)
-        scores = np.nan_to_num(scores, nan=-1.0, posinf=1.0, neginf=-1.0)
-        return scores.astype(np.float32)
-    else:
-        # Cannot reliably compute cosine without Hadamard vectors
-        return None
-
-
-def _filter_ambiguous_region(
-    H0: np.ndarray,
-    H1: np.ndarray,
-    X_cos_H0: Optional[np.ndarray],
-    X_cos_H1: Optional[np.ndarray],
-    cos_min: float = 0.7,
-    cos_max: float = 0.9,
-    min_samples_per_class: int = 200,
-    trial: int = 0,
-) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray], Optional[np.ndarray], bool]:
-    """Filter samples to ambiguous cosine similarity region.
-    
-    Args:
-        H0: H0 embeddings (N0, D)
-        H1: H1 embeddings (N1, D)
-        X_cos_H0: Optional Hadamard vectors for H0 (N0, D)
-        X_cos_H1: Optional Hadamard vectors for H1 (N1, D)
-        cos_min: Minimum cosine threshold (default 0.7)
-        cos_max: Maximum cosine threshold (default 0.9)
-        min_samples_per_class: Minimum samples required after filtering (default 200)
-        trial: Trial number for logging
-        
-    Returns:
-        Tuple of (H0_filtered, H1_filtered, X_cos_H0_filtered, X_cos_H1_filtered, used_filtering)
-    """
-    n0_orig = H0.shape[0]
-    n1_orig = H1.shape[0]
-    
-    # Compute cosine scores (requires X_cos Hadamard vectors)
-    cos_H0 = _compute_cosine_scores(H0, X_cos_H0)
-    cos_H1 = _compute_cosine_scores(H1, X_cos_H1)
-    
-    # If we can't compute cosine (no X_cos available), skip filtering
-    if cos_H0 is None or cos_H1 is None:
-        print(f"  [trial={trial}] AMBIGUOUS FILTER: X_cos not available, using FULL dataset")
-        return H0, H1, X_cos_H0, X_cos_H1, False
-    
-    # Filter to ambiguous region
-    mask_H0 = (cos_H0 >= cos_min) & (cos_H0 <= cos_max)
-    mask_H1 = (cos_H1 >= cos_min) & (cos_H1 <= cos_max)
-    
-    n0_filtered = np.sum(mask_H0)
-    n1_filtered = np.sum(mask_H1)
-    
-    # Check if we have enough samples
-    if n0_filtered < min_samples_per_class or n1_filtered < min_samples_per_class:
-        print(f"  [trial={trial}] AMBIGUOUS FILTER: Insufficient samples after filtering")
-        print(f"    H0: {n0_orig} → {n0_filtered} (need >={min_samples_per_class})")
-        print(f"    H1: {n1_orig} → {n1_filtered} (need >={min_samples_per_class})")
-        print(f"    → Using FULL dataset (no filtering)")
-        return H0, H1, X_cos_H0, X_cos_H1, False
-    
-    # Apply filtering
-    H0_filt = H0[mask_H0]
-    H1_filt = H1[mask_H1]
-    X_cos_H0_filt = X_cos_H0[mask_H0] if X_cos_H0 is not None else None
-    X_cos_H1_filt = X_cos_H1[mask_H1] if X_cos_H1 is not None else None
-    
-    # Log statistics
-    cos_H0_filt = cos_H0[mask_H0]
-    cos_H1_filt = cos_H1[mask_H1]
-    cos_all_filt = np.concatenate([cos_H0_filt, cos_H1_filt])
-    
-    print(f"  [trial={trial}] AMBIGUOUS FILTER: {cos_min} <= cosine <= {cos_max}")
-    print(f"    H0: {n0_orig} → {n0_filtered} ({100.0*n0_filtered/max(1,n0_orig):.1f}% retained)")
-    print(f"    H1: {n1_orig} → {n1_filtered} ({100.0*n1_filtered/max(1,n1_orig):.1f}% retained)")
-    print(f"    Cosine stats in filtered region: mean={np.mean(cos_all_filt):.3f} std={np.std(cos_all_filt):.3f}")
-    
-    return H0_filt, H1_filt, X_cos_H0_filt, X_cos_H1_filt, True
+    x = np.asarray(X_main_slice)
+    if x.ndim != 2 or x.shape[1] <= 1:
+        raise ValueError(
+            f"method={method_name} expects embedding input with shape (N,D), D>1, got {x.shape}"
+        )
+    return method.score(x)
 
 
 def fit_all_methods(
@@ -295,10 +213,14 @@ def fit_all_methods(
     H1_train: np.ndarray,
     H0_calib_eff: np.ndarray,
     H1_calib_eff: np.ndarray,
+    H0_calib_pure: Optional[np.ndarray] = None,
+    H1_calib_pure: Optional[np.ndarray] = None,
     H0_train_cos: Optional[np.ndarray],
     H1_train_cos: Optional[np.ndarray],
     H0_calib_eff_cos: Optional[np.ndarray],
     H1_calib_eff_cos: Optional[np.ndarray],
+    H0_calib_pure_cos: Optional[np.ndarray] = None,
+    H1_calib_pure_cos: Optional[np.ndarray] = None,
     weights: np.ndarray,
     seed: int,
     alpha: float,
@@ -309,110 +231,100 @@ def fit_all_methods(
     failures: Dict[str, List[str]],
 ) -> None:
     """Fit all methods in-place (modifies *methods* dict on failure).
-    
-    Applies ambiguous-region filtering (0.7 <= cosine <= 0.9) to train/calib data
-    for all learned methods and ensemble. CosineMethod uses full data.
+
+    Input routing is driven strictly by each method's declared input_space.
     """
-    # Apply ambiguous region filtering for learned methods
-    # CosineMethod and related methods use full data
-    COSINE_METHODS = {"Cosine", "CosineAffineCalib"}
-    
-    # Filter train data to ambiguous region (0.7 <= cosine <= 0.9)
-    H0_train_filt, H1_train_filt, H0_train_cos_filt, H1_train_cos_filt, used_train_filter = \
-        _filter_ambiguous_region(
-            H0_train, H1_train,
-            H0_train_cos, H1_train_cos,
-            cos_min=0.7, cos_max=0.9,
-            min_samples_per_class=50,  # Reduced to allow filtering with smaller datasets
-            trial=trial,
-        )
-    
-    # Filter calib data to ambiguous region
-    H0_calib_filt, H1_calib_filt, H0_calib_cos_filt, H1_calib_cos_filt, used_calib_filter = \
-        _filter_ambiguous_region(
-            H0_calib_eff, H1_calib_eff,
-            H0_calib_eff_cos, H1_calib_eff_cos,
-            cos_min=0.7, cos_max=0.9,
-            min_samples_per_class=50,  # Reduced to allow filtering with smaller datasets
-            trial=trial,
-        )
-    
     for name, method in list(methods.items()):
         if not hasattr(method, "fit"):
             continue
-        if name == "CosineAffineCalib":
-            continue
-        
-        # Determine which data to use: filtered (for learned methods) or full (for Cosine)
-        use_filtered = name not in COSINE_METHODS
-        
-        if use_filtered:
-            H0_train_use = H0_train_filt
-            H1_train_use = H1_train_filt
-            H0_calib_use = H0_calib_filt
-            H1_calib_use = H1_calib_filt
-            H0_train_cos_use = H0_train_cos_filt
-            H1_train_cos_use = H1_train_cos_filt
-            H0_calib_cos_use = H0_calib_cos_filt
-            H1_calib_cos_use = H1_calib_cos_filt
-        else:
-            H0_train_use = H0_train
-            H1_train_use = H1_train
-            H0_calib_use = H0_calib_eff
-            H1_calib_use = H1_calib_eff
-            H0_train_cos_use = H0_train_cos
-            H1_train_cos_use = H1_train_cos
-            H0_calib_cos_use = H0_calib_eff_cos
-            H1_calib_cos_use = H1_calib_eff_cos
-        
+
         try:
             w = weights if needs_weights(method) else None
-            s_for_method = seed if needs_seed(method) else seed
+            s_for_method = seed if needs_seed(method) else None
+            space = method_input_space(method)
 
-            if method_train_required(method):
-                if H0_train_use.shape[0] == 0 or H1_train_use.shape[0] == 0:
-                    failures[name].append(f"trial={trial}: fit required but pooled train empty")
+            if space == "embedding":
+                if H0_train.shape[1] <= 1 or H1_train.shape[1] <= 1:
+                    failures[name].append(
+                        f"trial={trial}: method requires embedding input with dim>1"
+                    )
+                    methods.pop(name, None)
                     continue
-                
-                # Special handling for WeightedEnsemble with alt matrices
-                if name == "WeightedEnsemble":
-                    fit_kwargs = {
-                        "weights": w,
-                        "seed": s_for_method,
-                        "alpha": alpha,
-                        "H0_calib": H0_calib_use,
-                        "H1_calib": H1_calib_use,
-                        "H0_train_alt": H0_train_cos_use,
-                        "H1_train_alt": H1_train_cos_use,
-                        "H0_calib_alt": H0_calib_cos_use,
-                        "H1_calib_alt": H1_calib_cos_use,
-                        "judge_input": {"Cosine": "alt"},  # Route Cosine to alt (Hadamard) matrices
-                        "tie_mode": tie_mode,
-                        "guardrail": tau_guardrail,
-                        "guardrail_delta": tau_guardrail_delta,
-                    }
-                    try:
-                        method.fit(H0_train_use, H1_train_use, **fit_kwargs)
-                    except TypeError as e:
-                        # Fallback if method doesn't support these params
-                        failures[name].append(f"trial={trial}: fit with alt matrices failed: {e}")
-                        try_fit_method(method, H0_train_use, H1_train_use, weights=w, seed=s_for_method, alpha=alpha)
-                else:
-                    # Try passing external calib data for other NP-safe methods
-                    fit_kwargs = {"weights": w, "seed": s_for_method, "alpha": alpha}
-                    fit_kwargs_with_calib = {**fit_kwargs,
-                                             "H0_calib": H0_calib_use,
-                                             "H1_calib": H1_calib_use}
-                    try:
-                        method.fit(H0_train_use, H1_train_use, **fit_kwargs_with_calib)
-                    except TypeError:
-                        # Method doesn't support external calib, use try_fit_method fallback
-                        try_fit_method(method, H0_train_use, H1_train_use, weights=w, seed=s_for_method, alpha=alpha)
+
+            if space == "scalar_score":
+                if H0_train_cos is None or H1_train_cos is None or H0_calib_eff_cos is None or H1_calib_eff_cos is None:
+                    failures[name].append(
+                        f"trial={trial}: method requires scalar_score input but X_cos is unavailable"
+                    )
+                    methods.pop(name, None)
+                    continue
+                H0_train_use = H0_train_cos
+                H1_train_use = H1_train_cos
+                H0_calib_use = H0_calib_eff_cos
+                H1_calib_use = H1_calib_eff_cos
             else:
-                try_fit_method(method, H0_calib_use, H1_calib_use, weights=w, seed=s_for_method, alpha=alpha)
+                H0_train_use = H0_train
+                H1_train_use = H1_train
+                H0_calib_use = H0_calib_eff
+                H1_calib_use = H1_calib_eff
+
+            # Strict protocol: fit on TRAIN when available; reserve CALIB for tau.
+            fit_H0 = H0_train_use if H0_train_use.shape[0] > 0 else H0_calib_use
+            fit_H1 = H1_train_use if H1_train_use.shape[0] > 0 else H1_calib_use
+            if fit_H0.shape[0] == 0 or fit_H1.shape[0] == 0:
+                failures[name].append(f"trial={trial}: fit failed due to empty class in fit split")
+                methods.pop(name, None)
+                continue
+
+            # Special handling for WeightedEnsemble with alt matrices
+            if name == "WeightedEnsemble":
+                # Strict global protocol support: pass pure CALIB (not train+calib)
+                # when provided by caller. Fallback to existing behavior otherwise.
+                H0_cal_for_ens = H0_calib_pure if H0_calib_pure is not None else H0_calib_use
+                H1_cal_for_ens = H1_calib_pure if H1_calib_pure is not None else H1_calib_use
+                H0_cal_for_ens_alt = H0_calib_pure_cos if H0_calib_pure_cos is not None else H0_calib_eff_cos
+                H1_cal_for_ens_alt = H1_calib_pure_cos if H1_calib_pure_cos is not None else H1_calib_eff_cos
+
+                judge_input: Dict[str, str] = {}
+                for judge in getattr(method, "judges", []):
+                    j_name = str(getattr(judge, "name", type(judge).__name__))
+                    if method_input_space(judge) == "scalar_score":
+                        judge_input[j_name] = "alt"
+                fit_kwargs = {
+                    "weights": w,
+                    "seed": s_for_method,
+                    "alpha": alpha,
+                    "H0_calib": H0_cal_for_ens,
+                    "H1_calib": H1_cal_for_ens,
+                    "H0_train_alt": H0_train_cos,
+                    "H1_train_alt": H1_train_cos,
+                    "H0_calib_alt": H0_cal_for_ens_alt,
+                    "H1_calib_alt": H1_cal_for_ens_alt,
+                    "judge_input": judge_input,
+                    "tie_mode": tie_mode,
+                    "guardrail": tau_guardrail,
+                    "guardrail_delta": tau_guardrail_delta,
+                }
+                try:
+                    method.fit(fit_H0, fit_H1, **fit_kwargs)
+                except TypeError as e:
+                    failures[name].append(f"trial={trial}: fit with routed matrices failed: {e}")
+                    try_fit_method(method, fit_H0, fit_H1, weights=w, seed=s_for_method, alpha=alpha)
+            else:
+                fit_kwargs = {"weights": w, "seed": s_for_method, "alpha": alpha}
+                fit_kwargs_with_calib = {
+                    **fit_kwargs,
+                    "H0_calib": H0_calib_use,
+                    "H1_calib": H1_calib_use,
+                }
+                try:
+                    method.fit(fit_H0, fit_H1, **fit_kwargs_with_calib)
+                except TypeError:
+                    try_fit_method(method, fit_H0, fit_H1, weights=w, seed=s_for_method, alpha=alpha)
 
         except Exception as exc:
             failures[name].append(f"trial={trial}: fit failed: {exc}")
+            methods.pop(name, None)
 
 def evaluate_methods(
     methods: Dict[str, Any],
@@ -444,56 +356,33 @@ def evaluate_methods(
 ) -> List[Dict[str, Any]]:
     """Evaluate all methods across regions for one trial. Returns per-method rows."""
     trial_rows: List[Dict[str, Any]] = []
+    method_region_stats: Dict[str, Dict[int, Dict[str, Any]]] = {}
+    method_time_ms: Dict[str, float] = {}
+    method_space: Dict[str, str] = {}
 
     for name in method_names:
         if name not in methods:
             continue
         method = methods[name]
 
-        micro_tp = micro_fp = micro_tn = micro_fn = 0
-        train_tp = train_fp = train_tn = train_fn = 0
-        macro_tprs: List[float] = []
-        macro_fprs: List[float] = []
-        tau_values: List[float] = []
+        method_space[name] = method_input_space(method)
+        if method_space[name] == "scalar_score" and X_cos is None:
+            failures[name].append(f"trial={trial}: method requires scalar_score input but X_cos is unavailable")
+            continue
+        if method_space[name] == "embedding" and X_main.shape[1] <= 1:
+            failures[name].append(f"trial={trial}: method requires embedding input with dim>1")
+            continue
+        per_region: Dict[int, Dict[str, Any]] = {}
 
         t_method_start = time.perf_counter()
-        ok_regions = 0
 
-        # choose feature matrix for this method
-        use_cos = (name in {"Cosine", "CosineAffineCalib"} and X_cos is not None)
-        if name == "CosineAffineCalib" and X_cos is None:
-            failures[name].append(f"trial={trial}: CosineAffineCalib requires X_cos")
-            continue
-        X_use = X_cos if use_cos else X_main
-
-        h0_pool_idx = np.concatenate(h0_train_idx_list + h0_calib_list) \
-            if (h0_train_idx_list or h0_calib_list) else np.array([], dtype=np.int64)
-        h1_pool_idx = np.concatenate(h1_train_idx_list + h1_calib_list) \
-            if (h1_train_idx_list or h1_calib_list) else np.array([], dtype=np.int64)
-
-        if name == "CosineAffineCalib":
-            try:
-                method.fit(
-                    X_use[h0_pool_idx] if h0_pool_idx.size > 0 else X_use[:0],
-                    X_use[h1_pool_idx] if h1_pool_idx.size > 0 else X_use[:0],
-                    seed=seed,
-                    alpha=alpha,
-                )
-            except Exception as exc:
-                failures[name].append(f"trial={trial}: CosineAffineCalib global fit failed: {exc}")
-                continue
-
-        # Build per-region calibration/effective indices
+        # Build per-region calibration-only indices (tau is calibration-only)
         h0_idx_by_rid: Dict[int, np.ndarray] = {}
         h1_idx_by_rid: Dict[int, np.ndarray] = {}
         region_idx_for_proto: Dict[int, np.ndarray] = {}
         for s in splits:
-            if method_train_required(method):
-                h0_idx = s.H0_calib
-                h1_idx = s.H1_calib
-            else:
-                h0_idx = np.concatenate([s.H0_train, s.H0_calib]) if s.H0_train.size > 0 else s.H0_calib
-                h1_idx = np.concatenate([s.H1_train, s.H1_calib]) if s.H1_train.size > 0 else s.H1_calib
+            h0_idx = s.H0_calib
+            h1_idx = s.H1_calib
             h0_idx_by_rid[int(s.rid)] = h0_idx
             h1_idx_by_rid[int(s.rid)] = h1_idx
             region_idx_for_proto[int(s.rid)] = np.concatenate([h0_idx, h1_idx]) if (h0_idx.size + h1_idx.size) > 0 else np.array([], dtype=np.int64)
@@ -503,7 +392,7 @@ def evaluate_methods(
             if cos_affine_grouping == "cluster":
                 cos_affine_gid_by_rid = _build_region_cluster_map(
                     splits=splits,
-                    X_proto=X_use,
+                    X_proto=X_main,
                     region_to_idx=region_idx_for_proto,
                     n_clusters=cos_affine_n_clusters,
                     seed=seed,
@@ -520,12 +409,12 @@ def evaluate_methods(
                 idx0 = h0_idx_by_rid[rid]
                 idx1 = h1_idx_by_rid[rid]
                 if idx0.size > 0:
-                    sc0 = np.asarray(np.sum(X_use[idx0], axis=1), dtype=np.float32).reshape(-1)
+                    sc0 = np.asarray(method._raw_cosine(X_main[idx0]), dtype=np.float32).reshape(-1)
                     scores_all.append(sc0)
                     y_all.append(np.zeros(sc0.shape[0], dtype=np.int32))
                     gid_all.append(np.full(sc0.shape[0], gid, dtype=np.int64))
                 if idx1.size > 0:
-                    sc1 = np.asarray(np.sum(X_use[idx1], axis=1), dtype=np.float32).reshape(-1)
+                    sc1 = np.asarray(method._raw_cosine(X_main[idx1]), dtype=np.float32).reshape(-1)
                     scores_all.append(sc1)
                     y_all.append(np.ones(sc1.shape[0], dtype=np.int32))
                     gid_all.append(np.full(sc1.shape[0], gid, dtype=np.int64))
@@ -567,26 +456,20 @@ def evaluate_methods(
         tau_global: Optional[float] = None
         if tau_mode == "global" or tau_shrink:
             try:
-                if use_cos:
-                    if name == "CosineAffineCalib" and hasattr(method, "set_active_group"):
-                        method.set_active_group(None)
-                    sc0_cal = np.asarray(
-                        _score_method_with_routing(
-                            method, name,
-                            X_main[h0_pool_idx],
-                            X_cos[h0_pool_idx] if X_cos is not None else None,
-                        ),
-                        dtype=np.float32,
-                    ).reshape(-1)
-                else:
-                    sc0_cal = np.asarray(
-                        _score_method_with_routing(
-                            method, name,
-                            H0_calib_eff,
-                            X_cos[np.concatenate(h0_train_idx_list + h0_calib_list)] if X_cos is not None and (h0_train_idx_list or h0_calib_list) else None,
-                        ),
-                        dtype=np.float32,
-                    ).reshape(-1)
+                h0_calib_idx_all = np.concatenate(h0_calib_list) if h0_calib_list else np.array([], dtype=np.int64)
+                if h0_calib_idx_all.size == 0:
+                    failures[name].append(f"trial={trial}: empty calibration H0 pool for global tau")
+                    continue
+                if name == "CosineAffineCalib" and hasattr(method, "set_active_group"):
+                    method.set_active_group(None)
+                sc0_cal = np.asarray(
+                    _score_method_with_routing(
+                        method, name,
+                        X_main[h0_calib_idx_all],
+                        X_cos[h0_calib_idx_all] if X_cos is not None else None,
+                    ),
+                    dtype=np.float32,
+                ).reshape(-1)
                 tau_global = _select_tau(
                     sc0_cal,
                     alpha=alpha,
@@ -608,10 +491,10 @@ def evaluate_methods(
             h0_cal_idx = h0_idx_by_rid[rid]
             h1_cal_idx = h1_idx_by_rid[rid]
 
-            H0_cal_r = X_use[h0_cal_idx] if h0_cal_idx.size > 0 else X_use[:0]
-            H1_cal_r = X_use[h1_cal_idx] if h1_cal_idx.size > 0 else X_use[:0]
-            H0_ev = X_use[s.H0_eval]
-            H1_ev = X_use[s.H1_eval]
+            H0_cal_r = X_main[h0_cal_idx] if h0_cal_idx.size > 0 else X_main[:0]
+            H1_cal_r = X_main[h1_cal_idx] if h1_cal_idx.size > 0 else X_main[:0]
+            H0_ev = X_main[s.H0_eval]
+            H1_ev = X_main[s.H1_eval]
 
             try:
                 if name == "CosineAffineCalib" and hasattr(method, "set_active_group"):
@@ -694,11 +577,6 @@ def evaluate_methods(
                 fpr_r = float(np.mean(p0 == 1))
                 tpr_r = float(np.mean(p1 == 1))
 
-                micro_fp += int(np.sum(p0 == 1))
-                micro_tn += int(np.sum(p0 == 0))
-                micro_tp += int(np.sum(p1 == 1))
-                micro_fn += int(np.sum(p1 == 0))
-
                 # Train/calib metrics: score calibration data against the same tau
                 sc0_cal_full = np.asarray(
                     _score_method_with_routing(
@@ -718,24 +596,73 @@ def evaluate_methods(
                 ).reshape(-1)
                 p0_tr = apply_threshold(sc0_cal_full, tau_r, tie_mode)
                 p1_tr = apply_threshold(sc1_cal_full, tau_r, tie_mode)
-                train_fp += int(np.sum(p0_tr == 1))
-                train_tn += int(np.sum(p0_tr == 0))
-                train_tp += int(np.sum(p1_tr == 1))
-                train_fn += int(np.sum(p1_tr == 0))
-
-                macro_fprs.append(fpr_r)
-                macro_tprs.append(tpr_r)
-                tau_values.append(tau_r)
-                ok_regions += 1
+                per_region[rid] = {
+                    "fp": int(np.sum(p0 == 1)),
+                    "tn": int(np.sum(p0 == 0)),
+                    "tp": int(np.sum(p1 == 1)),
+                    "fn": int(np.sum(p1 == 0)),
+                    "train_fp": int(np.sum(p0_tr == 1)),
+                    "train_tn": int(np.sum(p0_tr == 0)),
+                    "train_tp": int(np.sum(p1_tr == 1)),
+                    "train_fn": int(np.sum(p1_tr == 0)),
+                    "fpr": fpr_r,
+                    "tpr": tpr_r,
+                    "tau": float(tau_r),
+                }
 
             except Exception as exc:
                 failures[name].append(f"trial={trial} region={rid}: score failed: {exc}")
                 continue
 
         t_method_ms = (time.perf_counter() - t_method_start) * 1000.0
-        if ok_regions == 0:
+        if not per_region:
             failures[name].append(f"trial={trial}: no regions evaluated")
             continue
+
+        method_time_ms[name] = float(t_method_ms)
+        method_region_stats[name] = per_region
+
+    if not method_region_stats:
+        return trial_rows
+
+    shared_rids: Optional[set[int]] = None
+    all_rids: set[int] = set()
+    for m_name, stats_by_rid in method_region_stats.items():
+        rid_set = set(int(r) for r in stats_by_rid.keys())
+        all_rids |= rid_set
+        shared_rids = rid_set if shared_rids is None else (shared_rids & rid_set)
+
+    shared = sorted(shared_rids) if shared_rids is not None else []
+    if len(shared) == 0:
+        raise RuntimeError(
+            f"trial={trial}: comparability failure, no shared valid regions across methods"
+        )
+
+    for name, per_region in method_region_stats.items():
+        missing = sorted(int(r) for r in (all_rids - set(per_region.keys())))
+        if missing:
+            failures[name].append(
+                f"trial={trial}: dropped {len(missing)} region(s) for comparability; missing={missing[:20]}"
+            )
+
+        micro_tp = micro_fp = micro_tn = micro_fn = 0
+        train_tp = train_fp = train_tn = train_fn = 0
+        macro_tprs: List[float] = []
+        macro_fprs: List[float] = []
+        tau_values: List[float] = []
+        for rid in shared:
+            rr = per_region[rid]
+            micro_fp += int(rr["fp"])
+            micro_tn += int(rr["tn"])
+            micro_tp += int(rr["tp"])
+            micro_fn += int(rr["fn"])
+            train_fp += int(rr["train_fp"])
+            train_tn += int(rr["train_tn"])
+            train_tp += int(rr["train_tp"])
+            train_fn += int(rr["train_fn"])
+            macro_fprs.append(float(rr["fpr"]))
+            macro_tprs.append(float(rr["tpr"]))
+            tau_values.append(float(rr["tau"]))
 
         micro_tpr = float(micro_tp / max(1, (micro_tp + micro_fn)))
         micro_fpr = float(micro_fp / max(1, (micro_fp + micro_tn)))
@@ -744,7 +671,7 @@ def evaluate_methods(
         macro_tpr = float(np.mean(macro_tprs)) if macro_tprs else float("nan")
         macro_fpr = float(np.mean(macro_fprs)) if macro_fprs else float("nan")
         tau_mean = float(np.mean(tau_values)) if tau_values else float("nan")
-        tau_out = float(tau_global) if tau_mode == "global" and tau_global is not None else tau_mean
+        tau_out = tau_mean
 
         row = {
             "trial": trial,
@@ -760,8 +687,11 @@ def evaluate_methods(
             "train_fpr": train_fpr,
             "macro_tpr": macro_tpr,
             "macro_fpr": macro_fpr,
-            "ok_regions": int(ok_regions),
-            "time_ms": float(t_method_ms),
+            "ok_regions": int(len(shared)),
+            "shared_regions": int(len(shared)),
+            "dropped_regions_for_comparability": int(len(all_rids) - len(shared)),
+            "input_space": method_space[name],
+            "time_ms": float(method_time_ms.get(name, 0.0)),
         }
         trial_rows.append(row)
 
@@ -826,43 +756,22 @@ def evaluate_methods_global(
         if name not in methods:
             continue
         method = methods[name]
-
-        use_cos = (name in {"Cosine", "CosineAffineCalib"} and X_cos is not None)
-        if name == "CosineAffineCalib" and X_cos is None:
-            failures[name].append(f"trial={trial}: CosineAffineCalib requires X_cos")
+        space = method_input_space(method)
+        if space == "scalar_score" and X_cos is None:
+            failures[name].append(f"trial={trial}: method requires scalar_score input but X_cos is unavailable")
             continue
-        X_use = X_cos if use_cos else X_main
+        if space == "embedding" and X_main.shape[1] <= 1:
+            failures[name].append(f"trial={trial}: method requires embedding input with dim>1")
+            continue
 
         t_start = time.perf_counter()
 
-        # Determine whether this method needs separate train/calib splits
-        requires_train_split = method_train_required(method)
+        # Calibration indices for tau computation: CALIB only for all methods.
+        h0_calib_eff_idx = gs.H0_calib
+        h1_calib_eff_idx = gs.H1_calib
 
-        # Build calibration indices for tau computation
-        # - For train-required methods (e.g., WeightedEnsemble): use CALIB only
-        # - For others: use pooled TRAIN+CALIB
-        if requires_train_split:
-            h0_calib_eff_idx = gs.H0_calib
-            h1_calib_eff_idx = gs.H1_calib
-            h0_train_idx = gs.H0_train
-            h1_train_idx = gs.H1_train
-        else:
-            h0_calib_eff_idx = np.concatenate([gs.H0_train, gs.H0_calib]) \
-                if gs.H0_train.size > 0 else gs.H0_calib
-            h1_calib_eff_idx = np.concatenate([gs.H1_train, gs.H1_calib]) \
-                if gs.H1_train.size > 0 else gs.H1_calib
-
-        # Fit method (only if not already fitted by fit_all_methods)
-        if name == "CosineAffineCalib":
-            try:
-                method.fit(X_use[h0_calib_eff_idx], X_use[h1_calib_eff_idx], seed=seed, alpha=alpha)
-                if hasattr(method, "set_active_group"):
-                    method.set_active_group(None)
-            except Exception as exc:
-                failures[name].append(f"trial={trial}: CosineAffineCalib global fit failed: {exc}")
-                continue
-        # For train-required methods, fitting is already done by fit_all_methods()
-        # No need to refit here
+        if name == "CosineAffineCalib" and hasattr(method, "set_active_group"):
+            method.set_active_group(None)
 
         # --- calibrate single global tau ---
         try:
@@ -978,6 +887,7 @@ def evaluate_methods_global(
             "trial": trial,
             "seed": seed,
             "method": name,
+            "input_space": space,
             "region_key": region_key,
             "tau_mode": "global",
             "tau": float(tau),

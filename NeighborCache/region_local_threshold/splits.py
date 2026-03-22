@@ -129,6 +129,100 @@ class GlobalSplit:
     H1_eval: np.ndarray
 
 
+def filter_region_splits_by_score_range(
+    splits: List[RegionSplit],
+    *,
+    score: np.ndarray,
+    score_min: float,
+    score_max: float,
+    min_h0_eval: int,
+    min_h1_eval: int,
+) -> Tuple[List[RegionSplit], Dict[str, int]]:
+    """Apply one shared score-range filter to train/calib/eval for all regions.
+
+    The same predicate is applied to each split partition and each class.
+    Regions that no longer satisfy eval mins are dropped globally.
+    """
+    s = np.asarray(score, dtype=np.float64).reshape(-1)
+    keep = (s >= float(score_min)) & (s <= float(score_max))
+
+    out: List[RegionSplit] = []
+    stats = defaultdict(int)
+
+    def _f(idx: np.ndarray) -> np.ndarray:
+        if idx.size == 0:
+            return idx
+        return idx[keep[idx]]
+
+    for r in splits:
+        h0_tr = _f(r.H0_train)
+        h1_tr = _f(r.H1_train)
+        h0_ca = _f(r.H0_calib)
+        h1_ca = _f(r.H1_calib)
+        h0_ev = _f(r.H0_eval)
+        h1_ev = _f(r.H1_eval)
+
+        if h0_ev.size < int(min_h0_eval):
+            stats["dropped_region_min_h0_eval_after_filter"] += 1
+            continue
+        if h1_ev.size < int(min_h1_eval):
+            stats["dropped_region_min_h1_eval_after_filter"] += 1
+            continue
+        if h0_ca.size == 0:
+            stats["dropped_region_empty_h0_calib_after_filter"] += 1
+            continue
+
+        out.append(
+            RegionSplit(
+                rid=int(r.rid),
+                H0_train=h0_tr.astype(np.int64, copy=False),
+                H1_train=h1_tr.astype(np.int64, copy=False),
+                H0_calib=h0_ca.astype(np.int64, copy=False),
+                H1_calib=h1_ca.astype(np.int64, copy=False),
+                H0_eval=h0_ev.astype(np.int64, copy=False),
+                H1_eval=h1_ev.astype(np.int64, copy=False),
+            )
+        )
+
+    stats["used_regions"] = int(len(out))
+    return out, dict(stats)
+
+
+def filter_global_split_by_score_range(
+    gs: GlobalSplit,
+    *,
+    score: np.ndarray,
+    score_min: float,
+    score_max: float,
+) -> Tuple[GlobalSplit, Dict[str, int]]:
+    """Apply one shared score-range filter to train/calib/eval for a global split."""
+    s = np.asarray(score, dtype=np.float64).reshape(-1)
+    keep = (s >= float(score_min)) & (s <= float(score_max))
+
+    def _f(idx: np.ndarray) -> np.ndarray:
+        if idx.size == 0:
+            return idx
+        return idx[keep[idx]].astype(np.int64, copy=False)
+
+    out = GlobalSplit(
+        H0_train=_f(gs.H0_train),
+        H1_train=_f(gs.H1_train),
+        H0_calib=_f(gs.H0_calib),
+        H1_calib=_f(gs.H1_calib),
+        H0_eval=_f(gs.H0_eval),
+        H1_eval=_f(gs.H1_eval),
+    )
+    stats = {
+        "h0_train": int(out.H0_train.size),
+        "h1_train": int(out.H1_train.size),
+        "h0_calib": int(out.H0_calib.size),
+        "h1_calib": int(out.H1_calib.size),
+        "h0_eval": int(out.H0_eval.size),
+        "h1_eval": int(out.H1_eval.size),
+    }
+    return out, stats
+
+
 def split_global(
     y: np.ndarray,
     *,

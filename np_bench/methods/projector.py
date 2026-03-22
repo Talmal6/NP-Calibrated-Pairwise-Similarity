@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import inspect
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional, Tuple
 
 import numpy as np
@@ -9,9 +9,10 @@ import numpy as np
 
 @dataclass
 class Projector:
-    kind: str                 # "lda" | "pca"
-    mean: np.ndarray          # shape (d,)
-    W: np.ndarray             # shape (d, k)
+    kind: str                 # "lda" | "pca" | "umap"
+    mean: np.ndarray          # shape (d,)  – unused for umap
+    W: np.ndarray             # shape (d, k) – unused for umap
+    umap_model: Any = field(default=None, repr=False)  # set only when kind=="umap"
 
 
 def _pca_projector(X: np.ndarray, k: int) -> Projector:
@@ -23,6 +24,42 @@ def _pca_projector(X: np.ndarray, k: int) -> Projector:
     _, _, Vt = np.linalg.svd(Z, full_matrices=False)
     W = Vt[:k].T.astype(np.float32)  # (d,k)
     return Projector(kind="pca", mean=mu.astype(np.float32), W=W)
+
+
+def _umap_projector(
+    X: np.ndarray,
+    y: np.ndarray,
+    k: int,
+    *,
+    n_neighbors: int = 15,
+    min_dist: float = 0.1,
+    metric: str = "euclidean",
+    random_state: Optional[int] = 42,
+    **umap_kwargs: Any,
+) -> Projector:
+    """Supervised UMAP projection.  Requires the ``umap-learn`` package."""
+    try:
+        import umap as umap_lib
+    except ImportError as e:
+        raise ImportError(
+            "umap-learn is required for the 'umap' projector. "
+            "Install it with: pip install umap-learn"
+        ) from e
+
+    X = np.asarray(X, dtype=np.float32)
+    reducer = umap_lib.UMAP(
+        n_components=k,
+        n_neighbors=n_neighbors,
+        min_dist=min_dist,
+        metric=metric,
+        random_state=random_state,
+        **umap_kwargs,
+    )
+    reducer.fit(X, y)
+    d = X.shape[1]
+    dummy_mean = np.zeros(d, dtype=np.float32)
+    dummy_W = np.zeros((d, k), dtype=np.float32)
+    return Projector(kind="umap", mean=dummy_mean, W=dummy_W, umap_model=reducer)
 
 
 def _lda_binary_projector(X0: np.ndarray, X1: np.ndarray, shrink: float = 1e-2) -> Projector:
@@ -61,6 +98,7 @@ def fit_projector(
     k: int,
     *,
     lda_shrink: float = 1e-2,
+    umap_kwargs: Optional[dict] = None,
 ) -> Projector:
     kind = kind.lower()
     if kind == "pca":
@@ -69,11 +107,23 @@ def fit_projector(
     if kind == "lda":
         # binary LDA is always 1D
         return _lda_binary_projector(X0, X1, shrink=lda_shrink)
+    if kind == "umap":
+        X = np.concatenate([X0, X1], axis=0)
+        y = np.concatenate([np.zeros(len(X0)), np.ones(len(X1))]).astype(np.float32)
+        return _umap_projector(X, y, k, **(umap_kwargs or {}))
     raise ValueError(f"Unknown projector kind: {kind}")
 
 
 def apply_projector(P: Projector, X: np.ndarray) -> np.ndarray:
     X = np.asarray(X, dtype=np.float32)
+    if P.kind == "umap":
+        if P.umap_model is None:
+            raise ValueError("UMAP projector has no fitted model.")
+        Z = P.umap_model.transform(X).astype(np.float32)
+        # L2-normalise so that cosine-based downstream methods are well-defined
+        norms = np.linalg.norm(Z, axis=1, keepdims=True)
+        Z = Z / np.maximum(norms, 1e-12)
+        return Z
     return (X - P.mean) @ P.W
 
 
@@ -100,12 +150,14 @@ class ProjectedMethod:
         proj_kind: str,
         proj_dim: int,
         lda_shrink: float = 1e-2,
+        umap_kwargs: Optional[dict] = None,
     ):
         self.name = name
         self.base = base_method
         self.proj_kind = proj_kind
         self.proj_dim = int(proj_dim)
         self.lda_shrink = float(lda_shrink)
+        self.umap_kwargs: dict = umap_kwargs or {}
         self.P: Optional[Projector] = None
 
         self.needs_weights = bool(getattr(base_method, "needs_weights", False))
@@ -121,7 +173,11 @@ class ProjectedMethod:
         alpha: float = 0.05,
     ):
         k = 1 if self.proj_kind.lower() == "lda" else self.proj_dim
-        self.P = fit_projector(self.proj_kind, H0, H1, k, lda_shrink=self.lda_shrink)
+        self.P = fit_projector(
+            self.proj_kind, H0, H1, k,
+            lda_shrink=self.lda_shrink,
+            umap_kwargs=self.umap_kwargs,
+        )
 
         H0p = apply_projector(self.P, H0)
         H1p = apply_projector(self.P, H1)

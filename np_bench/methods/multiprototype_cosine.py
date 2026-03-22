@@ -35,8 +35,9 @@ class MultiPrototypeCosineMethod(OnlineBaseMethod):
     def fit(self, H0_train: np.ndarray, H1_train: np.ndarray, *,
             weights=None, seed=None) -> "MultiPrototypeCosineMethod":
         # Learn prototypes from H1 (positive class)
+        fit_seed = self.seed if seed is None else int(seed)
         self.C = _kmeans(H1_train, k=min(self.k, H1_train.shape[0]),
-                         seed=self.seed)
+                 seed=fit_seed)
         return self
 
     def score(self, X: np.ndarray) -> np.ndarray:

@@ -25,6 +25,7 @@ class BaseMethod(ABC):
     name: str = "BaseMethod"
     needs_weights: bool = False
     needs_seed: bool = False
+    input_space: str = "embedding"
     saved_vectors: np.ndarray | None = None
     
 

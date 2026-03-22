@@ -14,6 +14,7 @@ from .pair_logreg import PairFeatureLogRegMethod
 from .weighted_ensemble import WeightedEnsembleMethod
 from .projector import ProjectedMethod
 from .cosine_augmented import CosineAugmentedMethod
+from .precomputed_cosine import PrecomputedCosineMethod
 
 
 def _has_xgb() -> bool:
@@ -130,8 +131,9 @@ def get_default_methods(has_xgb: bool | None = None):
 
     if "WhitenedCosineMethod" in opt:
         ensemble_judges.append(opt["WhitenedCosineMethod"]())
-    if "MahalanobisDeltaMethod" in opt:
-        ensemble_judges.append(opt["MahalanobisDeltaMethod"]())
+    if has_xgb:
+        from .xgboost import XGBoostLightMethod
+        ensemble_judges.append(XGBoostLightMethod())
     
     ensemble_judges += [
         LDAMethod(),
@@ -179,12 +181,6 @@ def get_default_methods(has_xgb: bool | None = None):
             proj_kind="lda",
             proj_dim=1,
         ),
-        ProjectedMethod(
-            name="LDA1+Cosine",
-            base_method=CosineMethod(),
-            proj_kind="lda",
-            proj_dim=1,
-        ),
 
         # PCA only with strong linear-ish models
         ProjectedMethod(
@@ -211,6 +207,7 @@ def get_default_methods(has_xgb: bool | None = None):
             proj_kind="pca",
             proj_dim=32,
         ),
+
     ]
 
     # ============================================================

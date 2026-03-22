@@ -363,3 +363,5 @@ Stores:
 ✔ Reproducible
 ✔ Ready for research / GitHub / extension
 
+example usage:
+python -m NeighborCache.region_local_threshold.cli --data dataset_path --region_key sem_bucket --alpha 0.05 --n_trials 5 --seed 42 --n_train 40

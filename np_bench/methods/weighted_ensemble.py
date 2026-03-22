@@ -33,6 +33,7 @@ class WeightedEnsembleMethod(BaseMethod):
     name: str = "WeightedEnsemble"
     needs_seed: bool = True
     needs_weights: bool = False
+    input_space: str = "mixed"
 
     def __init__(
         self,
@@ -197,7 +198,18 @@ class WeightedEnsembleMethod(BaseMethod):
             return float("inf")
 
         if guardrail == "none":
-            return float(np.quantile(s, 1.0 - alpha))
+            # Tie-aware empirical NP selection.
+            uniq, counts = np.unique(s, return_counts=True)
+            n = int(s.size)
+            cumsum = np.cumsum(counts)
+            for i, tau in enumerate(uniq):
+                if tie_mode == "gt":
+                    k = int(n - cumsum[i])
+                else:
+                    k = int(n - (cumsum[i - 1] if i > 0 else 0))
+                if (k / max(1, n)) <= alpha:
+                    return float(tau)
+            return float("inf")
 
         uniq, counts = np.unique(s, return_counts=True)
         n = int(s.size)
