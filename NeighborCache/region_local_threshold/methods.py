@@ -15,7 +15,7 @@ if str(ROOT) not in sys.path:
 from np_bench.methods import get_default_methods
 
 
-_VALID_INPUT_SPACES = {"embedding", "scalar_score", "mixed"}
+_VALID_INPUT_SPACES = {"embedding", "scalar_score", "mixed", "text_pair"}
 
 
 def build_methods() -> Dict[str, Any]:
@@ -32,6 +32,7 @@ def method_input_space(method: Any) -> str:
     Supported spaces:
       - "embedding": expects dense embedding matrix (N, D), D > 1
       - "scalar_score": expects scalar precomputed score matrix (N, 1)
+            - "text_pair": expects text pair matrix (N, 2)
       - "mixed": expects embedding matrix and may optionally consume alt matrix
     """
     space = str(getattr(method, "input_space", "embedding"))

@@ -10,7 +10,7 @@ from typing import Optional
 class TinyMLPMethod(BaseMethod):
     name = "Tiny MLP"
     needs_weights = False
-    needs_seed = False
+    needs_seed = True
 
     def __init__(self):
         self.clf = None
@@ -23,6 +23,7 @@ class TinyMLPMethod(BaseMethod):
         weights: Optional[np.ndarray] = None,
         seed: Optional[int] = None,
     ) -> "TinyMLPMethod":
+        del weights
         X_tr = np.vstack([H0_train, H1_train])
         y_tr = np.hstack([np.zeros(len(H0_train)), np.ones(len(H1_train))])
 
@@ -32,6 +33,7 @@ class TinyMLPMethod(BaseMethod):
             solver="adam",
             max_iter=800,
             alpha=0.001,
+            random_state=int(seed if seed is not None else 42),
         )
 
         with warnings.catch_warnings():

@@ -13,7 +13,7 @@ except Exception:
 class XGBoostLightMethod(BaseMethod):
     name = "XGBoost"
     needs_weights = False
-    needs_seed = False
+    needs_seed = True
 
     def __init__(self):
         if not HAS_XGB:
@@ -28,6 +28,7 @@ class XGBoostLightMethod(BaseMethod):
         weights: Optional[np.ndarray] = None,
         seed: Optional[int] = None,
     ) -> "XGBoostLightMethod":
+        del weights
         X_tr = np.vstack([H0_train, H1_train])
         y_tr = np.hstack([np.zeros(len(H0_train)), np.ones(len(H1_train))])
 
@@ -39,6 +40,7 @@ class XGBoostLightMethod(BaseMethod):
             verbosity=0,
             use_label_encoder=False,
             eval_metric="logloss",
+            random_state=int(seed if seed is not None else 42),
         )
         self.clf.fit(X_tr, y_tr)
         return self

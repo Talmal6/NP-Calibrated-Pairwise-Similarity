@@ -17,6 +17,8 @@ class EnsembleConfig:
     nonneg_simplex: bool = True
     eps: float = 1e-12
     meta_frac: float = 0.30  # fraction for internal calib split when external not provided
+    tpr_tie_tol: float = 1e-4  # treat near-identical feasible TPRs as ties
+    tie_break_entropy: bool = True  # prefer more mixed weights on TPR ties
 
 
 class WeightedEnsembleMethod(BaseMethod):
@@ -125,6 +127,16 @@ class WeightedEnsembleMethod(BaseMethod):
         if s > 0:
             w /= s
         return w
+
+    @staticmethod
+    def _weight_entropy(w: np.ndarray, eps: float = 1e-12) -> float:
+        ww = np.asarray(w, dtype=np.float64)
+        ww = np.maximum(ww, 0.0)
+        s = float(np.sum(ww))
+        if s <= eps:
+            return 0.0
+        ww = ww / s
+        return float(-np.sum(ww * np.log(np.maximum(ww, eps))))
     
     # -----------------------------
     # NP tau selection (from evaluation.py)
@@ -289,6 +301,7 @@ class WeightedEnsembleMethod(BaseMethod):
         best_w = None
         best_tpr = -1.0
         best_tau = float("inf")
+        best_entropy = -1.0
         infeasible_count = 0
         
         for w_cand in candidates:
@@ -296,11 +309,20 @@ class WeightedEnsembleMethod(BaseMethod):
             if not is_feas:
                 infeasible_count += 1
                 continue
-            
-            if tpr > best_tpr:
+
+            cand_entropy = self._weight_entropy(w_cand)
+            if tpr > (best_tpr + self.cfg.tpr_tie_tol):
                 best_tpr = tpr
                 best_w = w_cand.copy()
                 best_tau = tau
+                best_entropy = cand_entropy
+            elif abs(tpr - best_tpr) <= self.cfg.tpr_tie_tol:
+                # On practical ties, prefer less degenerate (more mixed) solutions.
+                if self.cfg.tie_break_entropy and cand_entropy > best_entropy:
+                    best_tpr = tpr
+                    best_w = w_cand.copy()
+                    best_tau = tau
+                    best_entropy = cand_entropy
         
         # Optional: refine with scipy if available
         if best_w is not None:
@@ -330,10 +352,19 @@ class WeightedEnsembleMethod(BaseMethod):
                     w_opt = w_opt / (np.sum(w_opt) + 1e-12)
                     
                     is_feas, tpr_opt, tau_opt = eval_feasibility_and_tpr(w_opt)
-                    if is_feas and tpr_opt > best_tpr:
-                        best_tpr = tpr_opt
-                        best_w = w_opt
-                        best_tau = tau_opt
+                    if is_feas:
+                        ent_opt = self._weight_entropy(w_opt)
+                        if tpr_opt > (best_tpr + self.cfg.tpr_tie_tol):
+                            best_tpr = tpr_opt
+                            best_w = w_opt
+                            best_tau = tau_opt
+                            best_entropy = ent_opt
+                        elif abs(tpr_opt - best_tpr) <= self.cfg.tpr_tie_tol:
+                            if self.cfg.tie_break_entropy and ent_opt > best_entropy:
+                                best_tpr = tpr_opt
+                                best_w = w_opt
+                                best_tau = tau_opt
+                                best_entropy = ent_opt
             except Exception:
                 pass  # Fall back to candidates
         

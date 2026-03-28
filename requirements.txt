@@ -11,3 +11,7 @@ numba>=0.57
 
 # Plotting
 matplotlib>=3.6
+
+# Optional: cross-encoder reranker baseline
+transformers>=4.40
+torch>=2.1

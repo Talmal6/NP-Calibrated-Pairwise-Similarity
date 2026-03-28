@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
@@ -74,11 +74,38 @@ def split_indices_per_region(
     min_h0_eval: int,
     min_h1_eval: int,
 ) -> Tuple[List[RegionSplit], Dict[str, int]]:
+    splits, stats, _ = split_indices_per_region_detailed(
+        region_id=region_id,
+        y=y,
+        n_train_cap=n_train_cap,
+        n_calib_cap=n_calib_cap,
+        n_eval_cap=n_eval_cap,
+        seed=seed,
+        min_h0_eval=min_h0_eval,
+        min_h1_eval=min_h1_eval,
+    )
+    return splits, stats
+
+
+def split_indices_per_region_detailed(
+    region_id: np.ndarray,
+    y: np.ndarray,
+    *,
+    n_train_cap: int,
+    n_calib_cap: int,
+    n_eval_cap: int,
+    seed: int,
+    min_h0_eval: int,
+    min_h1_eval: int,
+) -> Tuple[List[RegionSplit], Dict[str, int], Dict[int, Dict[str, Any]]]:
     rng = np.random.default_rng(seed)
     regions = np.unique(region_id.astype(np.int64))
 
     splits: List[RegionSplit] = []
     stats = defaultdict(int)
+    region_status: Dict[int, Dict[str, Any]] = {
+        int(rid): {"status": "pending", "reason": ""} for rid in regions
+    }
 
     for rid in regions:
         idx_r = np.flatnonzero(region_id == rid)
@@ -90,6 +117,10 @@ def split_indices_per_region(
 
         if idx0.size < min_h0_eval or idx1.size < min_h1_eval:
             stats["skipped_region_insufficient_eval_mins"] += 1
+            region_status[int(rid)] = {
+                "status": "skipped",
+                "reason": "insufficient_eval_mins",
+            }
             continue
 
         h0_tr, h0_ca, h0_ev = _take_split_train_calib_eval(idx0, rng, n_train_cap, n_calib_cap, n_eval_cap)
@@ -97,9 +128,17 @@ def split_indices_per_region(
 
         if h0_ev.size < min_h0_eval:
             stats["skipped_region_min_h0_eval_after_sampling"] += 1
+            region_status[int(rid)] = {
+                "status": "skipped",
+                "reason": "min_h0_eval_after_sampling",
+            }
             continue
         if h1_ev.size < min_h1_eval:
             stats["skipped_region_min_h1_eval_after_sampling"] += 1
+            region_status[int(rid)] = {
+                "status": "skipped",
+                "reason": "min_h1_eval_after_sampling",
+            }
             continue
 
         splits.append(
@@ -114,8 +153,12 @@ def split_indices_per_region(
             )
         )
         stats["used_regions"] += 1
+        region_status[int(rid)] = {
+            "status": "eligible_after_split",
+            "reason": "passed_split_gating",
+        }
 
-    return splits, dict(stats)
+    return splits, dict(stats), region_status
 
 
 @dataclass
@@ -138,6 +181,26 @@ def filter_region_splits_by_score_range(
     min_h0_eval: int,
     min_h1_eval: int,
 ) -> Tuple[List[RegionSplit], Dict[str, int]]:
+    out, stats, _ = filter_region_splits_by_score_range_detailed(
+        splits,
+        score=score,
+        score_min=score_min,
+        score_max=score_max,
+        min_h0_eval=min_h0_eval,
+        min_h1_eval=min_h1_eval,
+    )
+    return out, stats
+
+
+def filter_region_splits_by_score_range_detailed(
+    splits: List[RegionSplit],
+    *,
+    score: np.ndarray,
+    score_min: float,
+    score_max: float,
+    min_h0_eval: int,
+    min_h1_eval: int,
+) -> Tuple[List[RegionSplit], Dict[str, int], Dict[int, Dict[str, Any]]]:
     """Apply one shared score-range filter to train/calib/eval for all regions.
 
     The same predicate is applied to each split partition and each class.
@@ -148,6 +211,7 @@ def filter_region_splits_by_score_range(
 
     out: List[RegionSplit] = []
     stats = defaultdict(int)
+    region_status_updates: Dict[int, Dict[str, Any]] = {}
 
     def _f(idx: np.ndarray) -> np.ndarray:
         if idx.size == 0:
@@ -164,12 +228,24 @@ def filter_region_splits_by_score_range(
 
         if h0_ev.size < int(min_h0_eval):
             stats["dropped_region_min_h0_eval_after_filter"] += 1
+            region_status_updates[int(r.rid)] = {
+                "status": "skipped",
+                "reason": "min_h0_eval_after_filter",
+            }
             continue
         if h1_ev.size < int(min_h1_eval):
             stats["dropped_region_min_h1_eval_after_filter"] += 1
+            region_status_updates[int(r.rid)] = {
+                "status": "skipped",
+                "reason": "min_h1_eval_after_filter",
+            }
             continue
         if h0_ca.size == 0:
             stats["dropped_region_empty_h0_calib_after_filter"] += 1
+            region_status_updates[int(r.rid)] = {
+                "status": "skipped",
+                "reason": "empty_h0_calib_after_filter",
+            }
             continue
 
         out.append(
@@ -183,9 +259,13 @@ def filter_region_splits_by_score_range(
                 H1_eval=h1_ev.astype(np.int64, copy=False),
             )
         )
+        region_status_updates[int(r.rid)] = {
+            "status": "eligible_after_filter",
+            "reason": "passed_score_filter",
+        }
 
     stats["used_regions"] = int(len(out))
-    return out, dict(stats)
+    return out, dict(stats), region_status_updates
 
 
 def filter_global_split_by_score_range(

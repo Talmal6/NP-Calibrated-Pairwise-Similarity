@@ -1,6 +1,7 @@
 """IO helpers: NPZ loading, feature resolution."""
 from __future__ import annotations
 
+import pickle
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -81,3 +82,222 @@ def resolve_features(ds: Dict[str, np.ndarray]) -> Tuple[str, np.ndarray, Option
         f"feat(dtype={feat_dtype},shape={feat_shape}) "
         f"emb(dtype={emb_dtype},shape={emb_shape})"
     )
+
+
+def _infer_text_pair_keys(ds: Dict[str, np.ndarray]) -> Optional[Tuple[str, str]]:
+    candidates = [
+        ("query_text", "anchor_text"),
+        ("q_text", "rep_text"),
+        ("q1_text", "q2_text"),
+        ("question", "anchor_question"),
+        ("text", "anchor_text"),
+    ]
+    for k1, k2 in candidates:
+        if k1 in ds and k2 in ds:
+            return k1, k2
+    return None
+
+
+def _as_object_text_array(a: np.ndarray, *, key: str) -> np.ndarray:
+    x = np.asarray(a)
+    if x.ndim != 1:
+        raise ValueError(f"Text key '{key}' must be 1D, got shape={x.shape}")
+    return x.astype(object, copy=False)
+
+
+def _first_non_empty_str(*vals: Any) -> Optional[str]:
+    for v in vals:
+        if v is None:
+            continue
+        s = str(v)
+        if s.strip() != "":
+            return s
+    return None
+
+
+def _load_qid_text_map(pkl_path: Path) -> Dict[int, str]:
+    with pkl_path.open("rb") as f:
+        raw = pickle.load(f)
+
+    if isinstance(raw, dict):
+        if "train" in raw and isinstance(raw["train"], list):
+            rows = raw["train"]
+        else:
+            rows = []
+            for v in raw.values():
+                if isinstance(v, list):
+                    rows.extend(v)
+    elif isinstance(raw, list):
+        rows = raw
+    else:
+        raise ValueError(f"Unsupported PKL format for text mapping: {type(raw)}")
+
+    qid_to_text: Dict[int, str] = {}
+    qid_keys_1 = ["qid1", "q1_id", "question1_id"]
+    qid_keys_2 = ["qid2", "q2_id", "question2_id"]
+    txt_keys_1 = ["q1_text", "question1", "q1", "text1", "query"]
+    txt_keys_2 = ["q2_text", "question2", "q2", "text2", "candidate", "doc"]
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        qid1 = next((row.get(k) for k in qid_keys_1 if k in row), None)
+        qid2 = next((row.get(k) for k in qid_keys_2 if k in row), None)
+
+        txt1 = _first_non_empty_str(*(row.get(k) for k in txt_keys_1))
+        txt2 = _first_non_empty_str(*(row.get(k) for k in txt_keys_2))
+
+        if qid1 is not None and txt1 is not None:
+            qid_i = int(qid1)
+            if qid_i not in qid_to_text:
+                qid_to_text[qid_i] = txt1
+        if qid2 is not None and txt2 is not None:
+            qid_i = int(qid2)
+            if qid_i not in qid_to_text:
+                qid_to_text[qid_i] = txt2
+
+    return qid_to_text
+
+
+def _normalize_rows(X: np.ndarray, eps: float = 1e-12) -> np.ndarray:
+    X = np.asarray(X, dtype=np.float32)
+    denom = np.linalg.norm(X, axis=1, keepdims=True)
+    return (X / np.maximum(denom, eps)).astype(np.float32, copy=False)
+
+
+def _build_text_pairs_from_single_text(
+    text: np.ndarray,
+    region_id: np.ndarray,
+    *,
+    anchor_features: Optional[np.ndarray],
+    anchor_strategy: str,
+    seed: int,
+) -> np.ndarray:
+    """Construct (query_text, anchor_text) by selecting one anchor per region.
+
+    This mirrors the anchor-vs-others setup used by embedding methods.
+    """
+    t = np.asarray(text, dtype=object).reshape(-1)
+    r = np.asarray(region_id, dtype=np.int64).reshape(-1)
+    if t.shape[0] != r.shape[0]:
+        raise ValueError(f"text/region row mismatch: text={t.shape[0]} region={r.shape[0]}")
+
+    rng = np.random.default_rng(seed)
+    anchor_idx_by_region: Dict[int, int] = {}
+    feat = None
+    if anchor_features is not None:
+        feat = np.asarray(anchor_features)
+        if feat.ndim != 2 or feat.shape[0] != t.shape[0]:
+            feat = None
+        elif feat.shape[1] > 1:
+            feat = _normalize_rows(feat)
+        else:
+            feat = None
+
+    for rid in np.unique(r):
+        idx = np.flatnonzero(r == rid)
+        if idx.size == 0:
+            continue
+
+        if anchor_strategy == "random":
+            aidx = int(rng.choice(idx))
+        elif anchor_strategy == "centroid_nearest" and feat is not None:
+            Xr = feat[idx]
+            c = np.mean(Xr, axis=0)
+            c_norm = float(np.linalg.norm(c))
+            if c_norm > 1e-12:
+                c = c / c_norm
+            sims = Xr @ c
+            aidx = int(idx[int(np.argmax(sims))])
+        else:
+            aidx = int(idx[0])
+
+        anchor_idx_by_region[int(rid)] = aidx
+
+    anchor_text = np.empty_like(t, dtype=object)
+    for i, rid in enumerate(r):
+        aidx = anchor_idx_by_region.get(int(rid), i)
+        anchor_text[i] = "" if t[aidx] is None else str(t[aidx])
+
+    query_text = np.array(["" if v is None else str(v) for v in t], dtype=object)
+    return np.column_stack([query_text, anchor_text]).astype(object, copy=False)
+
+
+def resolve_text_pairs(
+    ds: Dict[str, np.ndarray],
+    *,
+    text_pair_keys: Optional[Tuple[str, str]] = None,
+    text_source_pkl: Optional[str] = None,
+    region_id: Optional[np.ndarray] = None,
+    anchor_features: Optional[np.ndarray] = None,
+    anchor_strategy: str = "centroid_nearest",
+    seed: int = 42,
+) -> Tuple[Optional[str], Optional[np.ndarray]]:
+    """Resolve text pairs matrix (N,2) from NPZ or qid mapping.
+
+    Priority:
+      1) Direct NPZ text keys (explicit --text_pair_keys or inferred keys)
+      2) qid/anchor_qid + --text_source_pkl mapping
+    """
+    n_rows = None
+    if "label" in ds:
+        n_rows = int(np.asarray(ds["label"]).shape[0])
+
+    resolved_keys = text_pair_keys or _infer_text_pair_keys(ds)
+    if resolved_keys is not None:
+        k1, k2 = resolved_keys
+        if k1 in ds and k2 in ds:
+            t1 = _as_object_text_array(ds[k1], key=k1)
+            t2 = _as_object_text_array(ds[k2], key=k2)
+            if t1.shape[0] != t2.shape[0]:
+                raise ValueError(
+                    f"text keys length mismatch: {k1}={t1.shape[0]} vs {k2}={t2.shape[0]}"
+                )
+            if n_rows is not None and t1.shape[0] != n_rows:
+                raise ValueError(
+                    f"text keys rows mismatch label rows: text={t1.shape[0]} label={n_rows}"
+                )
+            X_text = np.column_stack([t1, t2]).astype(object, copy=False)
+            return f"{k1}+{k2}", X_text
+
+    if text_source_pkl is not None:
+        if "qid" not in ds or "anchor_qid" not in ds:
+            raise ValueError(
+                "--text_source_pkl requires NPZ keys 'qid' and 'anchor_qid'"
+            )
+        p = Path(text_source_pkl)
+        if not p.exists():
+            raise FileNotFoundError(f"text source pkl not found: {p}")
+
+        qid_to_text = _load_qid_text_map(p)
+        if len(qid_to_text) == 0:
+            raise RuntimeError(f"No qid->text mappings found in {p}")
+
+        qid = np.asarray(ds["qid"]).reshape(-1)
+        aqid = np.asarray(ds["anchor_qid"]).reshape(-1)
+        if qid.shape[0] != aqid.shape[0]:
+            raise ValueError(f"qid/anchor_qid shape mismatch: {qid.shape} vs {aqid.shape}")
+        if n_rows is not None and qid.shape[0] != n_rows:
+            raise ValueError(
+                f"qid rows mismatch label rows: qid={qid.shape[0]} label={n_rows}"
+            )
+
+        q_txt = np.array([qid_to_text.get(int(v), "") for v in qid], dtype=object)
+        a_txt = np.array([qid_to_text.get(int(v), "") for v in aqid], dtype=object)
+        X_text = np.column_stack([q_txt, a_txt]).astype(object, copy=False)
+        return f"qid+anchor_qid<-{p.name}", X_text
+
+    # Fallback: if only one text column exists, build anchor-vs-others text pairs by region.
+    if "text" in ds and region_id is not None:
+        t = _as_object_text_array(ds["text"], key="text")
+        X_text = _build_text_pairs_from_single_text(
+            t,
+            np.asarray(region_id, dtype=np.int64),
+            anchor_features=anchor_features,
+            anchor_strategy=anchor_strategy,
+            seed=seed,
+        )
+        return f"text+region_anchor[{anchor_strategy}]", X_text
+
+    return None, None

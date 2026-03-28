@@ -15,6 +15,7 @@ from .weighted_ensemble import WeightedEnsembleMethod
 from .projector import ProjectedMethod
 from .cosine_augmented import CosineAugmentedMethod
 from .precomputed_cosine import PrecomputedCosineMethod
+from .tiny_mlp import TinyMLPMethod
 
 
 def _has_xgb() -> bool:
@@ -115,6 +116,7 @@ def get_default_methods(has_xgb: bool | None = None):
         VectorWeightedMethod(),
         LogisticRegressionMethod(),
         LDAMethod(),
+        TinyMLPMethod(),
     ]
 
     # Multi-prototype cosine (NEW)
@@ -138,6 +140,7 @@ def get_default_methods(has_xgb: bool | None = None):
     ensemble_judges += [
         LDAMethod(),
         NaiveBayesMethod(),
+        TinyMLPMethod(),
     ]
     
     if "MultiPrototypeCosineMethod" in opt:
@@ -147,6 +150,7 @@ def get_default_methods(has_xgb: bool | None = None):
         WeightedEnsembleMethod(
             judges=ensemble_judges,
         )
+        
     )
 
     # Pair-features LogReg (NEW) – requires pair-based data, skip in single-vector mode

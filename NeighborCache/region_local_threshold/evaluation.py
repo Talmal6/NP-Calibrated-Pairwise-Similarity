@@ -182,6 +182,7 @@ def _score_method_with_routing(
     method_name: str,
     X_main_slice: np.ndarray,
     X_cos_slice: Optional[np.ndarray],
+    X_text_slice: Optional[np.ndarray],
 ) -> np.ndarray:
     space = method_input_space(method)
 
@@ -195,6 +196,16 @@ def _score_method_with_routing(
         if x.ndim != 2 or x.shape[1] != 1:
             raise ValueError(
                 f"method={method_name} expects scalar_score matrix with shape (N,1), got {x.shape}"
+            )
+        return method.score(x)
+
+    if space == "text_pair":
+        if X_text_slice is None:
+            raise ValueError(f"method={method_name} requires text_pair input but X_text is None")
+        x = np.asarray(X_text_slice, dtype=object)
+        if x.ndim != 2 or x.shape[1] != 2:
+            raise ValueError(
+                f"method={method_name} expects text_pair matrix with shape (N,2), got {x.shape}"
             )
         return method.score(x)
 
@@ -219,6 +230,10 @@ def fit_all_methods(
     H1_train_cos: Optional[np.ndarray],
     H0_calib_eff_cos: Optional[np.ndarray],
     H1_calib_eff_cos: Optional[np.ndarray],
+    H0_train_text: Optional[np.ndarray],
+    H1_train_text: Optional[np.ndarray],
+    H0_calib_eff_text: Optional[np.ndarray],
+    H1_calib_eff_text: Optional[np.ndarray],
     H0_calib_pure_cos: Optional[np.ndarray] = None,
     H1_calib_pure_cos: Optional[np.ndarray] = None,
     weights: np.ndarray,
@@ -262,6 +277,17 @@ def fit_all_methods(
                 H1_train_use = H1_train_cos
                 H0_calib_use = H0_calib_eff_cos
                 H1_calib_use = H1_calib_eff_cos
+            elif space == "text_pair":
+                if H0_train_text is None or H1_train_text is None or H0_calib_eff_text is None or H1_calib_eff_text is None:
+                    failures[name].append(
+                        f"trial={trial}: method requires text_pair input but X_text is unavailable"
+                    )
+                    methods.pop(name, None)
+                    continue
+                H0_train_use = H0_train_text
+                H1_train_use = H1_train_text
+                H0_calib_use = H0_calib_eff_text
+                H1_calib_use = H1_calib_eff_text
             else:
                 H0_train_use = H0_train
                 H1_train_use = H1_train
@@ -333,6 +359,7 @@ def evaluate_methods(
     *,
     X_main: np.ndarray,
     X_cos: Optional[np.ndarray],
+    X_text: Optional[np.ndarray],
     alpha: float,
     tau_mode: str,
     tie_mode: str,
@@ -353,6 +380,7 @@ def evaluate_methods(
     cos_affine_grouping: str,
     cos_affine_n_clusters: int,
     failures: Dict[str, List[str]],
+    trial_meta: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Evaluate all methods across regions for one trial. Returns per-method rows."""
     trial_rows: List[Dict[str, Any]] = []
@@ -368,6 +396,9 @@ def evaluate_methods(
         method_space[name] = method_input_space(method)
         if method_space[name] == "scalar_score" and X_cos is None:
             failures[name].append(f"trial={trial}: method requires scalar_score input but X_cos is unavailable")
+            continue
+        if method_space[name] == "text_pair" and X_text is None:
+            failures[name].append(f"trial={trial}: method requires text_pair input but X_text is unavailable")
             continue
         if method_space[name] == "embedding" and X_main.shape[1] <= 1:
             failures[name].append(f"trial={trial}: method requires embedding input with dim>1")
@@ -467,6 +498,7 @@ def evaluate_methods(
                         method, name,
                         X_main[h0_calib_idx_all],
                         X_cos[h0_calib_idx_all] if X_cos is not None else None,
+                        X_text[h0_calib_idx_all] if X_text is not None else None,
                     ),
                     dtype=np.float32,
                 ).reshape(-1)
@@ -527,6 +559,7 @@ def evaluate_methods(
                             method, name,
                             H0_cal_r,
                             X_cos[h0_cal_idx] if X_cos is not None and h0_cal_idx.size > 0 else None,
+                            X_text[h0_cal_idx] if X_text is not None and h0_cal_idx.size > 0 else None,
                         ),
                         dtype=np.float32,
                     ).reshape(-1)
@@ -559,6 +592,7 @@ def evaluate_methods(
                         method, name,
                         H0_ev,
                         X_cos[s.H0_eval] if X_cos is not None else None,
+                        X_text[s.H0_eval] if X_text is not None else None,
                     ),
                     dtype=np.float32,
                 ).reshape(-1)
@@ -567,6 +601,7 @@ def evaluate_methods(
                         method, name,
                         H1_ev,
                         X_cos[s.H1_eval] if X_cos is not None else None,
+                        X_text[s.H1_eval] if X_text is not None else None,
                     ),
                     dtype=np.float32,
                 ).reshape(-1)
@@ -583,6 +618,7 @@ def evaluate_methods(
                         method, name,
                         H0_cal_r,
                         X_cos[h0_cal_idx] if X_cos is not None and h0_cal_idx.size > 0 else None,
+                        X_text[h0_cal_idx] if X_text is not None and h0_cal_idx.size > 0 else None,
                     ),
                     dtype=np.float32,
                 ).reshape(-1)
@@ -591,6 +627,7 @@ def evaluate_methods(
                         method, name,
                         H1_cal_r,
                         X_cos[h1_cal_idx] if X_cos is not None and h1_cal_idx.size > 0 else None,
+                        X_text[h1_cal_idx] if X_text is not None and h1_cal_idx.size > 0 else None,
                     ),
                     dtype=np.float32,
                 ).reshape(-1)
@@ -637,6 +674,10 @@ def evaluate_methods(
         raise RuntimeError(
             f"trial={trial}: comparability failure, no shared valid regions across methods"
         )
+
+    if trial_meta is not None:
+        trial_meta["tested_region_ids"] = [int(r) for r in shared]
+        trial_meta["all_region_ids"] = sorted(int(r) for r in all_rids)
 
     for name, per_region in method_region_stats.items():
         missing = sorted(int(r) for r in (all_rids - set(per_region.keys())))
@@ -735,6 +776,7 @@ def evaluate_methods_global(
     *,
     X_main: np.ndarray,
     X_cos: Optional[np.ndarray],
+    X_text: Optional[np.ndarray],
     alpha: float,
     tie_mode: str,
     tau_guardrail: str,
@@ -760,6 +802,9 @@ def evaluate_methods_global(
         if space == "scalar_score" and X_cos is None:
             failures[name].append(f"trial={trial}: method requires scalar_score input but X_cos is unavailable")
             continue
+        if space == "text_pair" and X_text is None:
+            failures[name].append(f"trial={trial}: method requires text_pair input but X_text is unavailable")
+            continue
         if space == "embedding" and X_main.shape[1] <= 1:
             failures[name].append(f"trial={trial}: method requires embedding input with dim>1")
             continue
@@ -780,6 +825,7 @@ def evaluate_methods_global(
                     method, name,
                     X_main[h0_calib_eff_idx],
                     X_cos[h0_calib_eff_idx] if X_cos is not None else None,
+                    X_text[h0_calib_eff_idx] if X_text is not None else None,
                 ),
                 dtype=np.float32,
             ).reshape(-1)
@@ -809,6 +855,7 @@ def evaluate_methods_global(
                     method, name,
                     X_main[gs.H0_eval],
                     X_cos[gs.H0_eval] if X_cos is not None else None,
+                    X_text[gs.H0_eval] if X_text is not None else None,
                 ),
                 dtype=np.float32,
             ).reshape(-1)
@@ -817,6 +864,7 @@ def evaluate_methods_global(
                     method, name,
                     X_main[gs.H1_eval],
                     X_cos[gs.H1_eval] if X_cos is not None else None,
+                    X_text[gs.H1_eval] if X_text is not None else None,
                 ),
                 dtype=np.float32,
             ).reshape(-1)
@@ -841,6 +889,7 @@ def evaluate_methods_global(
                     method, name,
                     X_main[h0_calib_eff_idx],
                     X_cos[h0_calib_eff_idx] if X_cos is not None else None,
+                    X_text[h0_calib_eff_idx] if X_text is not None else None,
                 ),
                 dtype=np.float32,
             ).reshape(-1)
@@ -849,6 +898,7 @@ def evaluate_methods_global(
                     method, name,
                     X_main[h1_calib_eff_idx],
                     X_cos[h1_calib_eff_idx] if X_cos is not None else None,
+                    X_text[h1_calib_eff_idx] if X_text is not None else None,
                 ),
                 dtype=np.float32,
             ).reshape(-1)
