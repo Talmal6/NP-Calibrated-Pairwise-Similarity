@@ -16,7 +16,7 @@ from .projector import ProjectedMethod
 from .cosine_augmented import CosineAugmentedMethod
 from .precomputed_cosine import PrecomputedCosineMethod
 from .tiny_mlp import TinyMLPMethod
-
+from .andbox import AndBoxHCMethod
 
 def _has_xgb() -> bool:
     try:
@@ -97,6 +97,23 @@ def get_default_methods(has_xgb: bool | None = None):
 
     opt = _try_import_new_methods()
 
+    def _make_ensemble_judges() -> list[OnlineBaseMethod]:
+        judges: list[OnlineBaseMethod] = [
+            CosineMethod(),
+        ]
+        if "WhitenedCosineMethod" in opt:
+            judges.append(opt["WhitenedCosineMethod"]())
+        if has_xgb:
+            from .xgboost import XGBoostLightMethod
+            judges.append(XGBoostLightMethod())
+
+        judges += [
+            NaiveBayesMethod(),
+            TinyMLPMethod(),
+            LDAMethod(),
+        ]
+        return judges
+
     # ============================================================
     # Base methods (keep only methods with sane inductive bias
     # for semantic embeddings; drop systematic losers)
@@ -104,7 +121,7 @@ def get_default_methods(has_xgb: bool | None = None):
     base_methods: list[OnlineBaseMethod] = [
         CosineMethod(),
     ]
-
+    base_methods.append( AndBoxHCMethod())
     # Whitening / Mahalanobis family (NEW)
     if "WhitenedCosineMethod" in opt:
         base_methods.append(opt["WhitenedCosineMethod"]())  # WhitenedCosine
@@ -127,24 +144,9 @@ def get_default_methods(has_xgb: bool | None = None):
     # NEW: Weighted Ensemble over strong "judges"
     # (create fresh instances; don't reuse those in base_methods)
     # ------------------------------------------------------------
-    ensemble_judges: list[OnlineBaseMethod] = [
-        CosineMethod(),
-    ]
+    ensemble_judges: list[OnlineBaseMethod] = _make_ensemble_judges()
+    
 
-    if "WhitenedCosineMethod" in opt:
-        ensemble_judges.append(opt["WhitenedCosineMethod"]())
-    if has_xgb:
-        from .xgboost import XGBoostLightMethod
-        ensemble_judges.append(XGBoostLightMethod())
-    
-    ensemble_judges += [
-        LDAMethod(),
-        NaiveBayesMethod(),
-        TinyMLPMethod(),
-    ]
-    
-    if "MultiPrototypeCosineMethod" in opt:
-        ensemble_judges.append(opt["MultiPrototypeCosineMethod"](k=4))
 
     base_methods.append(
         WeightedEnsembleMethod(
@@ -174,10 +176,12 @@ def get_default_methods(has_xgb: bool | None = None):
         from .xgboost import XGBoostLightMethod
         base_methods.append(XGBoostLightMethod())
 
+
     # ============================================================
     # Projected methods (keep only ones that make geometric sense)
     # ============================================================
     projected_methods: list[OnlineBaseMethod] = [
+        # Projected ensemble variants (projection applied before ensemble fit)
         # LDA projections
         ProjectedMethod(
             name="LDA1+LogReg",

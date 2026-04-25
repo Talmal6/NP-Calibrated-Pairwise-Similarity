@@ -364,4 +364,4 @@ Stores:
 ✔ Ready for research / GitHub / extension
 
 example usage:
-python -m NeighborCache.region_local_threshold.cli --data dataset_path --region_key sem_bucket --alpha 0.05 --n_trials 5 --seed 42 --n_train 40
+python -m NeighborCache.region_local_threshold.cli --data NeighborCache/data/h1h0_final.npz --region_key global_cluster --alpha 0.05 --tau_mode global --n_trials 5 --seed 42 --n_train 1270 --n_calib 1240 --n_eval 1270 --hadamard_preprocess

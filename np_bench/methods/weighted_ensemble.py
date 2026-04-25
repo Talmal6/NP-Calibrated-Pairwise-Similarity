@@ -427,6 +427,7 @@ class WeightedEnsembleMethod(BaseMethod):
         tie_mode: str = "ge",
         guardrail: str = "none",
         guardrail_delta: float = 0.01,
+        fit_context: str = "unknown",
     ) -> "WeightedEnsembleMethod":
         
         if alpha is None:
@@ -443,6 +444,17 @@ class WeightedEnsembleMethod(BaseMethod):
 
         # If external calib not provided, do internal split
         used_external_calib = (H0_calib is not None and H1_calib is not None)
+
+        if fit_context in {"local", "matched_global_on_local"}:
+            print(
+                "  [WeightedEnsemble][DEBUG] "
+                f"fit_context={fit_context} "
+                f"external_calib_used={bool(used_external_calib)} "
+                f"H0_train={int(H0_train.shape[0])} H1_train={int(H1_train.shape[0])} "
+                f"H0_calib={int(H0_calib.shape[0]) if H0_calib is not None else -1} "
+                f"H1_calib={int(H1_calib.shape[0]) if H1_calib is not None else -1}"
+            )
+
         if not used_external_calib:
             H0_j, H1_j, H0_calib, H1_calib = self._split_train(H0_train, H1_train, seed)
             # If alt matrices provided, split them too
@@ -508,12 +520,27 @@ class WeightedEnsembleMethod(BaseMethod):
             calib_tpr = calib_fpr = float("nan")
 
         # log
-        calib_msg = "external calib" if used_external_calib else f"internal split (meta_frac={self.cfg.meta_frac:.2f})"
+        calib_msg = (
+            "external calib"
+            if used_external_calib
+            else f"internal split (meta_frac={self.cfg.meta_frac:.2f})"
+        )
+        metric_label = "Pooled external calib" if used_external_calib else "Meta-calib (internal split)"
         print(f"[WeightedEnsemble] Fitted weights (alpha={alpha:.4f}, {calib_msg}):")
-        print(f"  tau={self.tau:.4f}, Calib: TPR={calib_tpr:.4f}, FPR={calib_fpr:.4f}")
+        print(f"  tau={self.tau:.4f}, {metric_label}: TPR={calib_tpr:.4f}, FPR={calib_fpr:.4f}")
         for j, wj in zip(self.judges, self.meta_w):
             name = getattr(j, "name", type(j).__name__)
             print(f"  {name:20s}: {wj:+.4f}")
+
+        if fit_context in {"local", "matched_global_on_local"} and self.meta_w is not None and self.meta_w.size > 0:
+            top_idx = int(np.argmax(self.meta_w))
+            top_name = getattr(self.judges[top_idx], "name", type(self.judges[top_idx]).__name__)
+            top_weight = float(self.meta_w[top_idx])
+            collapsed = bool(top_weight >= 0.999)
+            print(
+                "  [WeightedEnsemble][DEBUG] "
+                f"collapse={collapsed} top_judge={top_name} top_weight={top_weight:.4f}"
+            )
 
         return self
 

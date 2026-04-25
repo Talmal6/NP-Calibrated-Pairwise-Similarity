@@ -183,10 +183,14 @@ def _score_method_with_routing(
     X_main_slice: np.ndarray,
     X_cos_slice: Optional[np.ndarray],
     X_text_slice: Optional[np.ndarray],
+    region_ids_slice: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     space = method_input_space(method)
+    needs_region_ids = bool(getattr(method, "requires_region_ids", False))
 
     if space == "mixed":
+        if needs_region_ids:
+            return method.score(X_main_slice, X_alt=X_cos_slice, region_ids=region_ids_slice)
         return method.score(X_main_slice, X_alt=X_cos_slice)
 
     if space == "scalar_score":
@@ -236,6 +240,8 @@ def fit_all_methods(
     H1_calib_eff_text: Optional[np.ndarray],
     H0_calib_pure_cos: Optional[np.ndarray] = None,
     H1_calib_pure_cos: Optional[np.ndarray] = None,
+    H0_calib_region_ids: Optional[np.ndarray] = None,
+    H1_calib_region_ids: Optional[np.ndarray] = None,
     weights: np.ndarray,
     seed: int,
     alpha: float,
@@ -244,6 +250,8 @@ def fit_all_methods(
     tau_guardrail_delta: float,
     trial: int,
     failures: Dict[str, List[str]],
+    require_pure_calib_for_ensemble: bool = False,
+    fit_context: str = "unknown",
 ) -> None:
     """Fit all methods in-place (modifies *methods* dict on failure).
 
@@ -302,14 +310,37 @@ def fit_all_methods(
                 methods.pop(name, None)
                 continue
 
-            # Special handling for WeightedEnsemble with alt matrices
-            if name == "WeightedEnsemble":
-                # Strict global protocol support: pass pure CALIB (not train+calib)
-                # when provided by caller. Fallback to existing behavior otherwise.
-                H0_cal_for_ens = H0_calib_pure if H0_calib_pure is not None else H0_calib_use
-                H1_cal_for_ens = H1_calib_pure if H1_calib_pure is not None else H1_calib_use
-                H0_cal_for_ens_alt = H0_calib_pure_cos if H0_calib_pure_cos is not None else H0_calib_eff_cos
-                H1_cal_for_ens_alt = H1_calib_pure_cos if H1_calib_pure_cos is not None else H1_calib_eff_cos
+            # Special handling for ensemble methods with per-judge routing.
+            if name in {"WeightedEnsemble", "RegionalWeightedEnsemble"}:
+                # In local contexts we require pure calib inputs for external meta-calibration.
+                has_pure_calib = H0_calib_pure is not None and H1_calib_pure is not None
+                if require_pure_calib_for_ensemble and not has_pure_calib:
+                    msg = (
+                        f"trial={trial}: WeightedEnsemble requires pure calib in fit_context={fit_context}, "
+                        "but H*_calib_pure is unavailable; skipping method"
+                    )
+                    failures[name].append(msg)
+                    print(f"[WARN] {msg}")
+                    methods.pop(name, None)
+                    continue
+
+                H0_cal_for_ens = H0_calib_pure if has_pure_calib else H0_calib_use
+                H1_cal_for_ens = H1_calib_pure if has_pure_calib else H1_calib_use
+
+                has_pure_calib_alt = H0_calib_pure_cos is not None and H1_calib_pure_cos is not None
+                H0_cal_for_ens_alt = H0_calib_pure_cos if has_pure_calib_alt else H0_calib_eff_cos
+                H1_cal_for_ens_alt = H1_calib_pure_cos if has_pure_calib_alt else H1_calib_eff_cos
+
+                if fit_context in {"local", "matched_global_on_local"}:
+                    print(
+                        "[DEBUG][WeightedEnsemble][fit_all_methods] "
+                        f"context={fit_context} "
+                        f"using_pure_calib={bool(has_pure_calib)} "
+                        f"H0_train={int(H0_train_use.shape[0])} H1_train={int(H1_train_use.shape[0])} "
+                        f"H0_calib_pure={int(H0_calib_pure.shape[0]) if H0_calib_pure is not None else -1} "
+                        f"H1_calib_pure={int(H1_calib_pure.shape[0]) if H1_calib_pure is not None else -1} "
+                        f"H0_calib_eff={int(H0_calib_eff.shape[0])} H1_calib_eff={int(H1_calib_eff.shape[0])}"
+                    )
 
                 judge_input: Dict[str, str] = {}
                 for judge in getattr(method, "judges", []):
@@ -330,7 +361,11 @@ def fit_all_methods(
                     "tie_mode": tie_mode,
                     "guardrail": tau_guardrail,
                     "guardrail_delta": tau_guardrail_delta,
+                    "fit_context": fit_context,
                 }
+                if name == "RegionalWeightedEnsemble":
+                    fit_kwargs["H0_calib_region_ids"] = H0_calib_region_ids
+                    fit_kwargs["H1_calib_region_ids"] = H1_calib_region_ids
                 try:
                     method.fit(fit_H0, fit_H1, **fit_kwargs)
                 except TypeError as e:
@@ -373,16 +408,27 @@ def evaluate_methods(
     H0_calib_eff: np.ndarray,
     tau_shrink: bool,
     tau_shrink_m: float,
+    shrink_k: float,
     tau_guardrail: str,
     tau_guardrail_delta: float,
     swc_mode: str,
     swc_cluster_n_clusters: int,
     cos_affine_grouping: str,
     cos_affine_n_clusters: int,
+    local_fit_mode: str,
     failures: Dict[str, List[str]],
+    tau_cluster_id_by_rid: Optional[Dict[int, int]] = None,
     trial_meta: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
-    """Evaluate all methods across regions for one trial. Returns per-method rows."""
+    """Evaluate all methods across regions for one trial. Returns per-method rows.
+
+    local_fit_mode:
+      - "pooled": use methods pre-fitted on pooled local train/calib data.
+      - "per_region": refit each method on each region's local split before scoring.
+    """
+    if local_fit_mode not in {"pooled", "per_region"}:
+        raise ValueError(f"invalid local_fit_mode={local_fit_mode!r}; expected 'pooled' or 'per_region'")
+
     trial_rows: List[Dict[str, Any]] = []
     method_region_stats: Dict[str, Dict[int, Dict[str, Any]]] = {}
     method_time_ms: Dict[str, float] = {}
@@ -407,19 +453,25 @@ def evaluate_methods(
 
         t_method_start = time.perf_counter()
 
-        # Build per-region calibration-only indices (tau is calibration-only)
+        # Build per-region indices
+        h0_train_idx_by_rid: Dict[int, np.ndarray] = {}
+        h1_train_idx_by_rid: Dict[int, np.ndarray] = {}
         h0_idx_by_rid: Dict[int, np.ndarray] = {}
         h1_idx_by_rid: Dict[int, np.ndarray] = {}
         region_idx_for_proto: Dict[int, np.ndarray] = {}
         for s in splits:
+            h0_tr = s.H0_train
+            h1_tr = s.H1_train
             h0_idx = s.H0_calib
             h1_idx = s.H1_calib
+            h0_train_idx_by_rid[int(s.rid)] = h0_tr
+            h1_train_idx_by_rid[int(s.rid)] = h1_tr
             h0_idx_by_rid[int(s.rid)] = h0_idx
             h1_idx_by_rid[int(s.rid)] = h1_idx
             region_idx_for_proto[int(s.rid)] = np.concatenate([h0_idx, h1_idx]) if (h0_idx.size + h1_idx.size) > 0 else np.array([], dtype=np.int64)
 
         cos_affine_gid_by_rid: Dict[int, int] = {}
-        if name == "CosineAffineCalib":
+        if local_fit_mode == "pooled" and name == "CosineAffineCalib":
             if cos_affine_grouping == "cluster":
                 cos_affine_gid_by_rid = _build_region_cluster_map(
                     splits=splits,
@@ -462,7 +514,7 @@ def evaluate_methods(
 
         swc_gid_by_rid: Dict[int, int] = {}
         swc_fit_cache: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
-        if name == "StabilizedWhitenedCosine" and swc_mode == "cluster":
+        if local_fit_mode == "pooled" and name == "StabilizedWhitenedCosine" and swc_mode == "cluster":
             swc_gid_by_rid = _build_region_cluster_map(
                 splits=splits,
                 X_proto=X_main,
@@ -485,7 +537,8 @@ def evaluate_methods(
                 )
 
         tau_global: Optional[float] = None
-        if tau_mode == "global" or tau_shrink:
+        need_global_tau = (tau_mode in {"global", "shrink_local"}) or tau_shrink
+        if need_global_tau:
             try:
                 h0_calib_idx_all = np.concatenate(h0_calib_list) if h0_calib_list else np.array([], dtype=np.int64)
                 if h0_calib_idx_all.size == 0:
@@ -499,6 +552,7 @@ def evaluate_methods(
                         X_main[h0_calib_idx_all],
                         X_cos[h0_calib_idx_all] if X_cos is not None else None,
                         X_text[h0_calib_idx_all] if X_text is not None else None,
+                        region_id[h0_calib_idx_all] if region_id is not None else None,
                     ),
                     dtype=np.float32,
                 ).reshape(-1)
@@ -518,23 +572,230 @@ def evaluate_methods(
                 failures[name].append(f"trial={trial}: global tau failed: {exc}")
                 continue
 
+        tau_cluster_by_gid: Dict[int, float] = {}
+        n_calib_h0_cluster: Dict[int, int] = {}
+        n_calib_h0_region: Dict[int, int] = {}
+        if tau_mode == "cluster_local":
+            if not tau_cluster_id_by_rid:
+                failures[name].append(
+                    f"trial={trial}: tau_mode=cluster_local requires tau_cluster_id_by_rid"
+                )
+                continue
+
+            missing_rids = [
+                int(s.rid) for s in splits if int(s.rid) not in tau_cluster_id_by_rid
+            ]
+            if missing_rids:
+                failures[name].append(
+                    f"trial={trial}: missing cluster ids for regions={missing_rids[:20]}"
+                )
+                continue
+
+            h0_scores_by_gid: Dict[int, List[np.ndarray]] = defaultdict(list)
+            for s in splits:
+                rid = int(s.rid)
+                gid = int(tau_cluster_id_by_rid[rid])
+                h0_cal_idx = h0_idx_by_rid[rid]
+                h1_cal_idx = h1_idx_by_rid[rid]
+                n_calib_h0_region[rid] = int(h0_cal_idx.size)
+
+                H0_cal_r = X_main[h0_cal_idx] if h0_cal_idx.size > 0 else X_main[:0]
+                H1_cal_r = X_main[h1_cal_idx] if h1_cal_idx.size > 0 else X_main[:0]
+
+                try:
+                    if name == "CosineAffineCalib" and hasattr(method, "set_active_group"):
+                        gid_aff = int(cos_affine_gid_by_rid.get(rid, rid))
+                        method.set_active_group(gid_aff)
+
+                    if local_fit_mode == "pooled" and getattr(method, "supports_local_fit", False) and name == "StabilizedWhitenedCosine":
+                        try:
+                            if swc_mode == "region":
+                                method.fit_region(H0_cal_r, H1_cal_r)
+                            elif swc_mode == "cluster":
+                                swc_gid = int(swc_gid_by_rid.get(rid, rid))
+                                h0_gid_idx, h1_gid_idx = swc_fit_cache.get(
+                                    swc_gid,
+                                    (np.array([], dtype=np.int64), np.array([], dtype=np.int64)),
+                                )
+                                method.fit_region(
+                                    X_main[h0_gid_idx] if h0_gid_idx.size > 0 else X_main[:0],
+                                    X_main[h1_gid_idx] if h1_gid_idx.size > 0 else X_main[:0],
+                                )
+                        except Exception as exc_lr:
+                            failures[name].append(
+                                f"trial={trial} region={rid}: fit_region failed during cluster_local prep: {exc_lr}"
+                            )
+
+                    sc0_cal_r = np.asarray(
+                        _score_method_with_routing(
+                            method,
+                            name,
+                            H0_cal_r,
+                            X_cos[h0_cal_idx] if X_cos is not None and h0_cal_idx.size > 0 else None,
+                            X_text[h0_cal_idx] if X_text is not None and h0_cal_idx.size > 0 else None,
+                        ),
+                        dtype=np.float32,
+                    ).reshape(-1)
+                    if sc0_cal_r.size == 0:
+                        failures[name].append(f"trial={trial} region={rid}: empty calib for cluster_local tau")
+                        continue
+
+                    n_calib_h0_region[rid] = int(sc0_cal_r.size)
+                    h0_scores_by_gid[gid].append(sc0_cal_r)
+
+                except Exception as exc:
+                    failures[name].append(
+                        f"trial={trial} region={rid}: cluster_local prep failed: {exc}"
+                    )
+
+            for gid, parts in h0_scores_by_gid.items():
+                if not parts:
+                    continue
+                sc0_cal_cluster = np.concatenate(parts, axis=0).astype(np.float32, copy=False)
+                n_calib_h0_cluster[int(gid)] = int(sc0_cal_cluster.size)
+                tau_cluster = _select_tau(
+                    sc0_cal_cluster,
+                    alpha=alpha,
+                    tie_mode=tie_mode,
+                    guardrail=tau_guardrail,
+                    guardrail_delta=tau_guardrail_delta,
+                )
+                if not np.isfinite(tau_cluster):
+                    tau_cluster = float(np.quantile(sc0_cal_cluster, 1.0 - alpha))
+                    failures[name].append(
+                        f"trial={trial} cluster={int(gid)}: guardrail infeasible (n0={int(sc0_cal_cluster.size)}, alpha={alpha}, delta={tau_guardrail_delta}, method={tau_guardrail}) — fell back to empirical tau={tau_cluster:.4f}"
+                    )
+                tau_cluster_by_gid[int(gid)] = float(tau_cluster)
+
+            if trial_meta is not None:
+                crows = trial_meta.setdefault("cluster_local_rows", [])
+                for s in splits:
+                    rid = int(s.rid)
+                    gid = int(tau_cluster_id_by_rid[rid])
+                    tau_cluster = tau_cluster_by_gid.get(gid)
+                    if tau_cluster is None:
+                        continue
+                    crows.append(
+                        {
+                            "trial": int(trial),
+                            "seed": int(seed),
+                            "method": str(name),
+                            "rid": int(rid),
+                            "cluster_id": int(gid),
+                            "n_calib_h0_region": int(n_calib_h0_region[rid]),
+                            "n_calib_h0_cluster": int(n_calib_h0_cluster.get(gid, 0)),
+                            "tau_cluster": float(tau_cluster),
+                        }
+                    )
+
+            if not tau_cluster_by_gid:
+                failures[name].append(f"trial={trial}: cluster_local produced no cluster taus")
+                continue
+
         for s in splits:
             rid = int(s.rid)
+            h0_train_idx = h0_train_idx_by_rid[rid]
+            h1_train_idx = h1_train_idx_by_rid[rid]
             h0_cal_idx = h0_idx_by_rid[rid]
             h1_cal_idx = h1_idx_by_rid[rid]
 
+            H0_train_r = X_main[h0_train_idx] if h0_train_idx.size > 0 else X_main[:0]
+            H1_train_r = X_main[h1_train_idx] if h1_train_idx.size > 0 else X_main[:0]
             H0_cal_r = X_main[h0_cal_idx] if h0_cal_idx.size > 0 else X_main[:0]
             H1_cal_r = X_main[h1_cal_idx] if h1_cal_idx.size > 0 else X_main[:0]
+            H0_calib_eff_r = np.concatenate([H0_train_r, H0_cal_r], axis=0) if H0_train_r.shape[0] > 0 else H0_cal_r
+            H1_calib_eff_r = np.concatenate([H1_train_r, H1_cal_r], axis=0) if H1_train_r.shape[0] > 0 else H1_cal_r
             H0_ev = X_main[s.H0_eval]
             H1_ev = X_main[s.H1_eval]
 
+            if X_cos is not None:
+                H0_train_cos_r = X_cos[h0_train_idx] if h0_train_idx.size > 0 else X_cos[:0]
+                H1_train_cos_r = X_cos[h1_train_idx] if h1_train_idx.size > 0 else X_cos[:0]
+                H0_calib_cos_r = X_cos[h0_cal_idx] if h0_cal_idx.size > 0 else X_cos[:0]
+                H1_calib_cos_r = X_cos[h1_cal_idx] if h1_cal_idx.size > 0 else X_cos[:0]
+                H0_calib_eff_cos_r = np.concatenate([H0_train_cos_r, H0_calib_cos_r], axis=0) if H0_train_cos_r.shape[0] > 0 else H0_calib_cos_r
+                H1_calib_eff_cos_r = np.concatenate([H1_train_cos_r, H1_calib_cos_r], axis=0) if H1_train_cos_r.shape[0] > 0 else H1_calib_cos_r
+            else:
+                H0_train_cos_r = None
+                H1_train_cos_r = None
+                H0_calib_cos_r = None
+                H1_calib_cos_r = None
+                H0_calib_eff_cos_r = None
+                H1_calib_eff_cos_r = None
+
+            if X_text is not None:
+                H0_train_text_r = X_text[h0_train_idx] if h0_train_idx.size > 0 else X_text[:0]
+                H1_train_text_r = X_text[h1_train_idx] if h1_train_idx.size > 0 else X_text[:0]
+                H0_calib_text_r = X_text[h0_cal_idx] if h0_cal_idx.size > 0 else X_text[:0]
+                H1_calib_text_r = X_text[h1_cal_idx] if h1_cal_idx.size > 0 else X_text[:0]
+                H0_calib_eff_text_r = np.concatenate([H0_train_text_r, H0_calib_text_r], axis=0) if H0_train_text_r.shape[0] > 0 else H0_calib_text_r
+                H1_calib_eff_text_r = np.concatenate([H1_train_text_r, H1_calib_text_r], axis=0) if H1_train_text_r.shape[0] > 0 else H1_calib_text_r
+            else:
+                H0_train_text_r = None
+                H1_train_text_r = None
+                H0_calib_eff_text_r = None
+                H1_calib_eff_text_r = None
+
             try:
+                if local_fit_mode == "per_region":
+                    if tau_mode != "local" or tau_shrink:
+                        failures[name].append(
+                            f"trial={trial} region={rid}: local_fit_mode=per_region currently supports tau_mode='local' without tau_shrink"
+                        )
+                        continue
+                    if H0_calib_eff_r.shape[0] == 0 or H1_calib_eff_r.shape[0] == 0:
+                        failures[name].append(
+                            f"trial={trial} region={rid}: empty local fit/calib pool"
+                        )
+                        continue
+
+                    v0_r = np.var(H0_calib_eff_r, axis=0)
+                    v1_r = np.var(H1_calib_eff_r, axis=0)
+                    weights_r = (v1_r / (v0_r + 1e-12)).astype(np.float32, copy=False)
+
+                    fit_one = {name: method}
+                    fit_all_methods(
+                        fit_one,
+                        H0_train=H0_train_r,
+                        H1_train=H1_train_r,
+                        H0_calib_eff=H0_calib_eff_r,
+                        H1_calib_eff=H1_calib_eff_r,
+                        H0_calib_pure=H0_cal_r,
+                        H1_calib_pure=H1_cal_r,
+                        H0_train_cos=H0_train_cos_r,
+                        H1_train_cos=H1_train_cos_r,
+                        H0_calib_eff_cos=H0_calib_eff_cos_r,
+                        H1_calib_eff_cos=H1_calib_eff_cos_r,
+                        H0_calib_pure_cos=H0_calib_cos_r,
+                        H1_calib_pure_cos=H1_calib_cos_r,
+                        H0_calib_region_ids=np.full(H0_cal_r.shape[0], int(rid), dtype=np.int64),
+                        H1_calib_region_ids=np.full(H1_cal_r.shape[0], int(rid), dtype=np.int64),
+                        H0_train_text=H0_train_text_r,
+                        H1_train_text=H1_train_text_r,
+                        H0_calib_eff_text=H0_calib_eff_text_r,
+                        H1_calib_eff_text=H1_calib_eff_text_r,
+                        tie_mode=tie_mode,
+                        tau_guardrail=tau_guardrail,
+                        tau_guardrail_delta=tau_guardrail_delta,
+                        weights=weights_r,
+                        seed=seed,
+                        alpha=alpha,
+                        trial=trial,
+                        failures=failures,
+                        require_pure_calib_for_ensemble=True,
+                        fit_context="local_per_region",
+                    )
+                    if name not in fit_one:
+                        failures[name].append(f"trial={trial} region={rid}: per-region fit failed")
+                        continue
+                    method = fit_one[name]
+
                 if name == "CosineAffineCalib" and hasattr(method, "set_active_group"):
                     gid = int(cos_affine_gid_by_rid.get(rid, rid))
                     method.set_active_group(gid)
 
                 # Per-region fitting for methods that support it (e.g. StabilizedWhitenedCosine)
-                if getattr(method, "supports_local_fit", False) and name == "StabilizedWhitenedCosine":
+                if local_fit_mode == "pooled" and getattr(method, "supports_local_fit", False) and name == "StabilizedWhitenedCosine":
                     try:
                         if swc_mode == "region":
                             method.fit_region(H0_cal_r, H1_cal_r)
@@ -553,37 +814,87 @@ def evaluate_methods(
                             f"trial={trial} region={rid}: fit_region failed: {exc_lr}"
                         )
 
-                if tau_mode == "local":
-                    sc0_cal_r = np.asarray(
-                        _score_method_with_routing(
-                            method, name,
-                            H0_cal_r,
-                            X_cos[h0_cal_idx] if X_cos is not None and h0_cal_idx.size > 0 else None,
-                            X_text[h0_cal_idx] if X_text is not None and h0_cal_idx.size > 0 else None,
-                        ),
-                        dtype=np.float32,
-                    ).reshape(-1)
-                    if sc0_cal_r.size == 0:
-                        failures[name].append(f"trial={trial} region={rid}: empty calib for tau")
-                        continue
-                    tau_local = _select_tau(
-                        sc0_cal_r,
-                        alpha=alpha,
-                        tie_mode=tie_mode,
-                        guardrail=tau_guardrail,
-                        guardrail_delta=tau_guardrail_delta,
-                    )
-                    if not np.isfinite(tau_local):
-                        tau_local = float(np.quantile(sc0_cal_r, 1.0 - alpha))
-                        failures[name].append(
-                            f"trial={trial} region={rid}: guardrail infeasible (n0={int(sc0_cal_r.size)}, alpha={alpha}, delta={tau_guardrail_delta}, method={tau_guardrail}) — fell back to empirical tau={tau_local:.4f}"
-                        )
-                    if tau_shrink:
-                        n0_r = float(sc0_cal_r.size)
-                        lam = n0_r / (n0_r + float(max(tau_shrink_m, 1e-9)))
-                        tau_r = (1.0 - lam) * float(tau_global) + lam * float(tau_local)
+                if tau_mode in {"local", "shrink_local"}:
+                    if bool(getattr(method, "uses_internal_thresholds", False)):
+                        tau_r = float(getattr(method, "get_region_tau")(int(rid)))
                     else:
-                        tau_r = float(tau_local)
+                        sc0_cal_r = np.asarray(
+                            _score_method_with_routing(
+                                method, name,
+                                H0_cal_r,
+                                X_cos[h0_cal_idx] if X_cos is not None and h0_cal_idx.size > 0 else None,
+                                X_text[h0_cal_idx] if X_text is not None and h0_cal_idx.size > 0 else None,
+                                np.full(H0_cal_r.shape[0], int(rid), dtype=np.int64),
+                            ),
+                            dtype=np.float32,
+                        ).reshape(-1)
+                        if sc0_cal_r.size == 0:
+                            failures[name].append(f"trial={trial} region={rid}: empty calib for tau")
+                            continue
+                        tau_local = _select_tau(
+                            sc0_cal_r,
+                            alpha=alpha,
+                            tie_mode=tie_mode,
+                            guardrail=tau_guardrail,
+                            guardrail_delta=tau_guardrail_delta,
+                        )
+                        if not np.isfinite(tau_local):
+                            tau_local = float(np.quantile(sc0_cal_r, 1.0 - alpha))
+                            failures[name].append(
+                                f"trial={trial} region={rid}: guardrail infeasible (n0={int(sc0_cal_r.size)}, alpha={alpha}, delta={tau_guardrail_delta}, method={tau_guardrail}) — fell back to empirical tau={tau_local:.4f}"
+                            )
+
+                        if tau_mode == "shrink_local":
+                            if tau_global is None or not np.isfinite(tau_global):
+                                failures[name].append(
+                                    f"trial={trial} region={rid}: shrink_local requires finite tau_global"
+                                )
+                                continue
+                            n0_r = float(sc0_cal_r.size)
+                            k = float(max(shrink_k, 1e-9))
+                            lambda_global = k / (k + n0_r)
+                            tau_r = lambda_global * float(tau_global) + (1.0 - lambda_global) * float(tau_local)
+                            if trial_meta is not None:
+                                srows = trial_meta.setdefault("shrink_local_rows", [])
+                                srows.append(
+                                    {
+                                        "trial": int(trial),
+                                        "seed": int(seed),
+                                        "method": str(name),
+                                        "rid": int(rid),
+                                        "n_calib_h0": int(sc0_cal_r.size),
+                                        "lambda_global": float(lambda_global),
+                                        "tau_local": float(tau_local),
+                                        "tau_global": float(tau_global),
+                                        "tau_shrink": float(tau_r),
+                                    }
+                                )
+                        elif tau_shrink:
+                            n0_r = float(sc0_cal_r.size)
+                            lam = n0_r / (n0_r + float(max(tau_shrink_m, 1e-9)))
+                            tau_r = (1.0 - lam) * float(tau_global) + lam * float(tau_local)
+                        else:
+                            tau_r = float(tau_local)
+                elif tau_mode == "cluster_local":
+                    gid = int(tau_cluster_id_by_rid.get(rid, -1)) if tau_cluster_id_by_rid else -1
+                    tau_cluster = tau_cluster_by_gid.get(gid)
+                    if tau_cluster is None or not np.isfinite(tau_cluster):
+                        failures[name].append(
+                            f"trial={trial} region={rid}: missing finite cluster-local tau for cluster={gid}"
+                        )
+                        continue
+
+                    if tau_shrink:
+                        if tau_global is None or not np.isfinite(tau_global):
+                            failures[name].append(
+                                f"trial={trial} region={rid}: tau_shrink requires finite tau_global"
+                            )
+                            continue
+                        n0_r = float(n_calib_h0_region.get(rid, h0_cal_idx.size))
+                        lam = n0_r / (n0_r + float(max(tau_shrink_m, 1e-9)))
+                        tau_r = (1.0 - lam) * float(tau_global) + lam * float(tau_cluster)
+                    else:
+                        tau_r = float(tau_cluster)
                 else:
                     tau_r = float(tau_global)  # type: ignore[arg-type]
 
@@ -593,6 +904,7 @@ def evaluate_methods(
                         H0_ev,
                         X_cos[s.H0_eval] if X_cos is not None else None,
                         X_text[s.H0_eval] if X_text is not None else None,
+                        np.full(H0_ev.shape[0], int(rid), dtype=np.int64),
                     ),
                     dtype=np.float32,
                 ).reshape(-1)
@@ -602,6 +914,7 @@ def evaluate_methods(
                         H1_ev,
                         X_cos[s.H1_eval] if X_cos is not None else None,
                         X_text[s.H1_eval] if X_text is not None else None,
+                        np.full(H1_ev.shape[0], int(rid), dtype=np.int64),
                     ),
                     dtype=np.float32,
                 ).reshape(-1)
@@ -619,6 +932,7 @@ def evaluate_methods(
                         H0_cal_r,
                         X_cos[h0_cal_idx] if X_cos is not None and h0_cal_idx.size > 0 else None,
                         X_text[h0_cal_idx] if X_text is not None and h0_cal_idx.size > 0 else None,
+                        np.full(H0_cal_r.shape[0], int(rid), dtype=np.int64),
                     ),
                     dtype=np.float32,
                 ).reshape(-1)
@@ -628,6 +942,7 @@ def evaluate_methods(
                         H1_cal_r,
                         X_cos[h1_cal_idx] if X_cos is not None and h1_cal_idx.size > 0 else None,
                         X_text[h1_cal_idx] if X_text is not None and h1_cal_idx.size > 0 else None,
+                        np.full(H1_cal_r.shape[0], int(rid), dtype=np.int64),
                     ),
                     dtype=np.float32,
                 ).reshape(-1)
@@ -819,58 +1134,85 @@ def evaluate_methods_global(
             method.set_active_group(None)
 
         # --- calibrate single global tau ---
+        internal_tau = bool(getattr(method, "uses_internal_thresholds", False))
         try:
-            sc0_cal = np.asarray(
-                _score_method_with_routing(
-                    method, name,
-                    X_main[h0_calib_eff_idx],
-                    X_cos[h0_calib_eff_idx] if X_cos is not None else None,
-                    X_text[h0_calib_eff_idx] if X_text is not None else None,
-                ),
-                dtype=np.float32,
-            ).reshape(-1)
-            if sc0_cal.size == 0:
-                failures[name].append(f"trial={trial}: empty calib for global tau")
-                continue
-            tau = _select_tau(
-                sc0_cal,
-                alpha=alpha,
-                tie_mode=tie_mode,
-                guardrail=tau_guardrail,
-                guardrail_delta=tau_guardrail_delta,
-            )
-            if not np.isfinite(tau):
-                tau = float(np.quantile(sc0_cal, 1.0 - alpha))
-                failures[name].append(
-                    f"trial={trial}: guardrail infeasible (n0={int(sc0_cal.size)}, alpha={alpha}, delta={tau_guardrail_delta}, method={tau_guardrail}) — fell back to empirical tau={tau:.4f}"
+            if internal_tau:
+                tau = float(getattr(method, "global_tau", 0.0))
+            else:
+                sc0_cal = np.asarray(
+                    _score_method_with_routing(
+                        method, name,
+                        X_main[h0_calib_eff_idx],
+                        X_cos[h0_calib_eff_idx] if X_cos is not None else None,
+                        X_text[h0_calib_eff_idx] if X_text is not None else None,
+                        region_id[h0_calib_eff_idx] if region_id is not None else None,
+                    ),
+                    dtype=np.float32,
+                ).reshape(-1)
+                if sc0_cal.size == 0:
+                    failures[name].append(f"trial={trial}: empty calib for global tau")
+                    continue
+                tau = _select_tau(
+                    sc0_cal,
+                    alpha=alpha,
+                    tie_mode=tie_mode,
+                    guardrail=tau_guardrail,
+                    guardrail_delta=tau_guardrail_delta,
                 )
+                if not np.isfinite(tau):
+                    tau = float(np.quantile(sc0_cal, 1.0 - alpha))
+                    failures[name].append(
+                        f"trial={trial}: guardrail infeasible (n0={int(sc0_cal.size)}, alpha={alpha}, delta={tau_guardrail_delta}, method={tau_guardrail}) — fell back to empirical tau={tau:.4f}"
+                    )
         except Exception as exc:
             failures[name].append(f"trial={trial}: global tau failed: {exc}")
             continue
 
         # --- score pooled eval ---
         try:
-            sc0_ev = np.asarray(
-                _score_method_with_routing(
-                    method, name,
-                    X_main[gs.H0_eval],
-                    X_cos[gs.H0_eval] if X_cos is not None else None,
-                    X_text[gs.H0_eval] if X_text is not None else None,
-                ),
-                dtype=np.float32,
-            ).reshape(-1)
-            sc1_ev = np.asarray(
-                _score_method_with_routing(
-                    method, name,
-                    X_main[gs.H1_eval],
-                    X_cos[gs.H1_eval] if X_cos is not None else None,
-                    X_text[gs.H1_eval] if X_text is not None else None,
-                ),
-                dtype=np.float32,
-            ).reshape(-1)
+            if internal_tau:
+                p0 = np.asarray(
+                    method.predict(
+                        X_main[gs.H0_eval],
+                        X_alt=(X_cos[gs.H0_eval] if X_cos is not None else None),
+                        region_ids=(region_id[gs.H0_eval] if region_id is not None else None),
+                        tie_mode=tie_mode,
+                    ),
+                    dtype=np.int32,
+                ).reshape(-1)
+                p1 = np.asarray(
+                    method.predict(
+                        X_main[gs.H1_eval],
+                        X_alt=(X_cos[gs.H1_eval] if X_cos is not None else None),
+                        region_ids=(region_id[gs.H1_eval] if region_id is not None else None),
+                        tie_mode=tie_mode,
+                    ),
+                    dtype=np.int32,
+                ).reshape(-1)
+            else:
+                sc0_ev = np.asarray(
+                    _score_method_with_routing(
+                        method, name,
+                        X_main[gs.H0_eval],
+                        X_cos[gs.H0_eval] if X_cos is not None else None,
+                        X_text[gs.H0_eval] if X_text is not None else None,
+                        region_id[gs.H0_eval] if region_id is not None else None,
+                    ),
+                    dtype=np.float32,
+                ).reshape(-1)
+                sc1_ev = np.asarray(
+                    _score_method_with_routing(
+                        method, name,
+                        X_main[gs.H1_eval],
+                        X_cos[gs.H1_eval] if X_cos is not None else None,
+                        X_text[gs.H1_eval] if X_text is not None else None,
+                        region_id[gs.H1_eval] if region_id is not None else None,
+                    ),
+                    dtype=np.float32,
+                ).reshape(-1)
 
-            p0 = apply_threshold(sc0_ev, tau, tie_mode)
-            p1 = apply_threshold(sc1_ev, tau, tie_mode)
+                p0 = apply_threshold(sc0_ev, tau, tie_mode)
+                p1 = apply_threshold(sc1_ev, tau, tie_mode)
         except Exception as exc:
             failures[name].append(f"trial={trial}: global eval scoring failed: {exc}")
             continue
@@ -884,26 +1226,48 @@ def evaluate_methods_global(
 
         # --- train/calib metrics ---
         try:
-            sc0_tr = np.asarray(
-                _score_method_with_routing(
-                    method, name,
-                    X_main[h0_calib_eff_idx],
-                    X_cos[h0_calib_eff_idx] if X_cos is not None else None,
-                    X_text[h0_calib_eff_idx] if X_text is not None else None,
-                ),
-                dtype=np.float32,
-            ).reshape(-1)
-            sc1_tr = np.asarray(
-                _score_method_with_routing(
-                    method, name,
-                    X_main[h1_calib_eff_idx],
-                    X_cos[h1_calib_eff_idx] if X_cos is not None else None,
-                    X_text[h1_calib_eff_idx] if X_text is not None else None,
-                ),
-                dtype=np.float32,
-            ).reshape(-1)
-            p0_tr = apply_threshold(sc0_tr, tau, tie_mode)
-            p1_tr = apply_threshold(sc1_tr, tau, tie_mode)
+            if internal_tau:
+                p0_tr = np.asarray(
+                    method.predict(
+                        X_main[h0_calib_eff_idx],
+                        X_alt=(X_cos[h0_calib_eff_idx] if X_cos is not None else None),
+                        region_ids=(region_id[h0_calib_eff_idx] if region_id is not None else None),
+                        tie_mode=tie_mode,
+                    ),
+                    dtype=np.int32,
+                ).reshape(-1)
+                p1_tr = np.asarray(
+                    method.predict(
+                        X_main[h1_calib_eff_idx],
+                        X_alt=(X_cos[h1_calib_eff_idx] if X_cos is not None else None),
+                        region_ids=(region_id[h1_calib_eff_idx] if region_id is not None else None),
+                        tie_mode=tie_mode,
+                    ),
+                    dtype=np.int32,
+                ).reshape(-1)
+            else:
+                sc0_tr = np.asarray(
+                    _score_method_with_routing(
+                        method, name,
+                        X_main[h0_calib_eff_idx],
+                        X_cos[h0_calib_eff_idx] if X_cos is not None else None,
+                        X_text[h0_calib_eff_idx] if X_text is not None else None,
+                        region_id[h0_calib_eff_idx] if region_id is not None else None,
+                    ),
+                    dtype=np.float32,
+                ).reshape(-1)
+                sc1_tr = np.asarray(
+                    _score_method_with_routing(
+                        method, name,
+                        X_main[h1_calib_eff_idx],
+                        X_cos[h1_calib_eff_idx] if X_cos is not None else None,
+                        X_text[h1_calib_eff_idx] if X_text is not None else None,
+                        region_id[h1_calib_eff_idx] if region_id is not None else None,
+                    ),
+                    dtype=np.float32,
+                ).reshape(-1)
+                p0_tr = apply_threshold(sc0_tr, tau, tie_mode)
+                p1_tr = apply_threshold(sc1_tr, tau, tie_mode)
             train_tpr = float(np.sum(p1_tr == 1) / max(1, p1_tr.size))
             train_fpr = float(np.sum(p0_tr == 1) / max(1, p0_tr.size))
         except Exception:

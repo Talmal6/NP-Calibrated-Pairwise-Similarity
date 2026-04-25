@@ -16,8 +16,7 @@ from .base import BaseMethod, MethodResult
 class AndBoxModel:
     t: np.ndarray          # shape (d,)
     active: np.ndarray     # shape (k,)
-
-
+ 
 def _fit_andbox_core(
     H0: np.ndarray,
     H1: np.ndarray,
