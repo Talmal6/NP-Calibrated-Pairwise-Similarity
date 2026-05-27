@@ -1,28 +1,35 @@
 from __future__ import annotations
 
+import importlib
+from typing import Optional, Type
+
 from .base import OnlineBaseMethod
 
-# --- Strong baselines ---
+# Core baselines
 from .cosine import CosineMethod
 from .weighted_vector import VectorWeightedMethod
 from .logistic_regression import LogisticRegressionMethod
 from .lda import LDAMethod
-from .whitened_cosine import WhitenedCosineMethod
-from .naive_bayes import NaiveBayesMethod
-from .auc_weighted_diff import AUCWeightedDiffMethod
-from .pair_logreg import PairFeatureLogRegMethod
-from .weighted_ensemble import WeightedEnsembleMethod
-from .projector import ProjectedMethod
-from .cosine_augmented import CosineAugmentedMethod
-from .precomputed_cosine import PrecomputedCosineMethod
 from .tiny_mlp import TinyMLPMethod
-from .andbox import AndBoxHCMethod, AndBoxWgtMethod
-from .fisher_hadamard_methods import (
-    HadamardCosineMethod,
-    FisherWhitenedHadamardPooledMethod,
-    FisherWhitenedHadamardWithinMethod,
-    StabilizedWhitenedCosineMethod,
+from .andbox import AndBoxHCMethod
+
+# Main method
+from .whitened_cosine import WhitenedCosineMethod
+
+# Ensemble
+from .weighted_ensemble import WeightedEnsembleMethod
+
+# Hadamard / Fisher family
+from .fisher_hadamard_methods import HadamardCosineMethod
+
+# Ablations
+from .abl import (
+    available_ablations,
+    make_ablation_methods,
+    CANONICAL_ABLATIONS,
+    AblationMode,
 )
+
 
 def _has_xgb() -> bool:
     try:
@@ -32,261 +39,233 @@ def _has_xgb() -> bool:
         return False
 
 
-def _try_import_new_methods():
+def _optional_class(module_name: str, class_name: str) -> Optional[Type[OnlineBaseMethod]]:
     """
-    Import optional/new methods. If a file isn't present yet,
-    we skip it without breaking the package.
+    Import an optional method class without breaking the package if the file
+    or dependency is unavailable.
     """
-    out = {}
-
-    # Whitening / Mahalanobis
     try:
-        from .whitened_cosine import WhitenedCosineMethod  # type: ignore
-        out["WhitenedCosineMethod"] = WhitenedCosineMethod
+        module = importlib.import_module(f"{__package__}.{module_name}")
+        cls = getattr(module, class_name)
+        return cls
     except Exception:
-        pass
+        return None
 
-    try:
-        from .whitened_cosine import WhitenedLinearMethod  # type: ignore
-        out["WhitenedLinearMethod"] = WhitenedLinearMethod
-    except Exception:
-        pass
 
-    try:
-        from .mahalanobis_delta import MahalanobisDeltaMethod  # type: ignore
-        out["MahalanobisDeltaMethod"] = MahalanobisDeltaMethod
-    except Exception:
-        pass
+def _dedupe_by_name(methods: list[OnlineBaseMethod]) -> list[OnlineBaseMethod]:
+    """
+    Keep the first method with each name.
 
-    # Multi-prototype cosine
-    try:
-        from .multiprototype_cosine import MultiPrototypeCosineMethod  # type: ignore
-        out["MultiPrototypeCosineMethod"] = MultiPrototypeCosineMethod
-    except Exception:
-        pass
+    This prevents accidental duplicate entries when a method is imported through
+    both the stable and optional paths.
+    """
+    seen: set[str] = set()
+    out: list[OnlineBaseMethod] = []
 
-    # Feature-rich linear model
-    try:
-        from .pair_logreg import PairFeatureLogRegMethod  # type: ignore
-        out["PairFeatureLogRegMethod"] = PairFeatureLogRegMethod
-    except Exception:
-        pass
+    for method in methods:
+        name = getattr(method, "name", method.__class__.__name__)
 
-    # AUC-weighted diff (soft feature selection)
-    try:
-        from .auc_weighted_diff import AUCWeightedDiffMethod  # type: ignore
-        out["AUCWeightedDiffMethod"] = AUCWeightedDiffMethod
-    except Exception:
-        pass
+        if name in seen:
+            continue
 
-    # Calibration on cosine
-    try:
-        from .isotonic_cosine import IsotonicCalibratedCosineMethod  # type: ignore
-        out["IsotonicCalibratedCosineMethod"] = IsotonicCalibratedCosineMethod
-    except Exception:
-        pass
-
-    # Strong GBDT (sklearn)
-    try:
-        from .hist_gbdt import HistGBDTMethod  # type: ignore
-        out["HistGBDTMethod"] = HistGBDTMethod
-    except Exception:
-        pass
-
-    # Stabilized whitened cosine
-    try:
-        from .stabilized_whitened_cosine import StabilizedWhitenedCosineMethod  # type: ignore
-        out["StabilizedWhitenedCosineMethod"] = StabilizedWhitenedCosineMethod
-    except Exception:
-        pass
-
-    # Fisher/Hadamard score-side methods
-    try:
-        from .fisher_hadamard_methods import HadamardCosineMethod  # type: ignore
-        out["HadamardCosineMethod"] = HadamardCosineMethod
-    except Exception:
-        pass
-
-    # try:
-    #     from .fisher_hadamard_methods import FisherWhitenedHadamardPooledMethod  # type: ignore
-    #     out["FisherWhitenedHadamardPooledMethod"] = FisherWhitenedHadamardPooledMethod
-    # except Exception:
-    #     pass
-
-    # try:
-    #     from .fisher_hadamard_methods import FisherWhitenedHadamardWithinMethod  # type: ignore
-    #     out["FisherWhitenedHadamardWithinMethod"] = FisherWhitenedHadamardWithinMethod
-    # except Exception:
-    #     pass
-
-    # try:
-    #     from .fisher_hadamard_methods import StabilizedWhitenedCosineMethod  # type: ignore
-    #     out["StabilizedWhitenedCosineMethod"] = StabilizedWhitenedCosineMethod
-    # except Exception:
-    #     pass
+        seen.add(name)
+        out.append(method)
 
     return out
 
 
-def get_default_methods(has_xgb: bool | None = None):
+def _make_main_whitened_method() -> OnlineBaseMethod:
+    """
+    Main method.
+
+    This should match the winning ablation:
+
+        ablation:pca_whitened_hadamard_linear
+
+    Expected scoring route under --hadamard_preprocess:
+
+        X = emb(query) * emb(anchor)
+        score(X) = X @ w + b
+    """
+    return WhitenedCosineMethod(
+        name="WhitenedCosine",
+        eps=1e-6,
+        rel_eps=1e-6,
+        max_rank=128,
+        rank_mode="explained_variance",
+        explained_variance=0.99,
+    )
+
+
+def _make_ensemble_judges(has_xgb: bool) -> list[OnlineBaseMethod]:
+    """
+    Build fresh judge instances for WeightedEnsemble.
+
+    Do not reuse objects from base_methods, because each method stores fitted
+    state after training.
+    """
+    judges: list[OnlineBaseMethod] = [
+        CosineMethod(),
+    ]
+
+    if has_xgb:
+        XGBoostLightMethod = _optional_class("xgboost", "XGBoostLightMethod")
+        if XGBoostLightMethod is not None:
+            judges.append(XGBoostLightMethod())
+
+    judges.extend(
+        [
+            WhitenedCosineMethod(),
+            LDAMethod(),
+        ]
+    )
+
+    return judges
+
+
+def _make_ablation_suite() -> list[OnlineBaseMethod]:
+    """
+    Default ablations for the current --hadamard_preprocess evaluation path.
+
+    raw_cosine and current_whitened_cosine are intentionally excluded here
+    because the current benchmark route gives precomputed Hadamard features,
+    not raw embedding pairs. They remain available through make_ablation_methods.
+    """
+    methods = make_ablation_methods(
+        ablations=(
+            "raw_hadamard_linear",
+            "center_only_hadamard_linear",
+            "pca_whitened_hadamard_linear",
+            "diag_whitened_hadamard_linear",
+            "h0_only_pca_whitened_hadamard_linear",
+            "h1_only_pca_whitened_hadamard_linear",
+            "within_class_pca_whitened_hadamard_linear",
+            "shuffle_labels_pca_whitened_hadamard_linear",
+            "no_rank_truncation_pca_whitened_hadamard_linear",
+        ),
+        abs_eps=1e-6,
+        rel_eps=1e-6,
+        max_rank=128,
+        rank_mode="explained_variance",
+        explained_variance=0.99,
+    )
+
+    return list(methods.values())
+
+
+def get_default_methods(
+    has_xgb: bool | None = None,
+    *,
+    include_ablations: bool = True,
+    include_optional: bool = True,
+    include_ensemble: bool = True,
+) -> list[OnlineBaseMethod]:
+    """
+    Return the default benchmark method list.
+
+    The main method is WhitenedCosine, which should now be the production name
+    for the pooled PCA-whitened Hadamard linear scorer.
+
+    To run only core methods:
+
+        get_default_methods(include_ablations=False)
+
+    To run the full analysis suite:
+
+        get_default_methods(include_ablations=True)
+    """
     if has_xgb is None:
         has_xgb = _has_xgb()
 
-    opt = _try_import_new_methods()
+    methods: list[OnlineBaseMethod] = []
 
-    def _make_ensemble_judges() -> list[OnlineBaseMethod]:
-        judges: list[OnlineBaseMethod] = [
+    # ============================================================
+    # Minimal geometric baselines
+    # ============================================================
+    methods.extend(
+        [
             CosineMethod(),
+            AndBoxHCMethod(),
+            HadamardCosineMethod(),
         ]
-        if has_xgb:
-            from .xgboost import XGBoostLightMethod
-            judges.append(XGBoostLightMethod())
-
-        judges += [
-            TinyMLPMethod(),
-            LDAMethod(),
-        ]
-        return judges
-
-    # ============================================================
-    # Base methods (keep only methods with sane inductive bias
-    # for semantic embeddings; drop systematic losers)
-    # ============================================================
-    base_methods: list[OnlineBaseMethod] = [
-        CosineMethod(),
-    ]
-    base_methods.append( AndBoxHCMethod())
-    if "HadamardCosineMethod" in opt:
-        base_methods.append(opt["HadamardCosineMethod"]())
-    if "FisherWhitenedHadamardPooledMethod" in opt:
-        base_methods.append(opt["FisherWhitenedHadamardPooledMethod"]())
-    if "FisherWhitenedHadamardWithinMethod" in opt:
-        base_methods.append(opt["FisherWhitenedHadamardWithinMethod"]())
-    # Whitening / Mahalanobis family (NEW)
-    if "WhitenedCosineMethod" in opt:
-        base_methods.append(opt["WhitenedCosineMethod"]())  # WhitenedCosine
-    if "MahalanobisDeltaMethod" in opt:
-        base_methods.append(opt["MahalanobisDeltaMethod"]())  # -||W(x-y)||
-
-    # Other strong contenders
-    base_methods += [
-        VectorWeightedMethod(),
-        LogisticRegressionMethod(),
-        LDAMethod(),
-        TinyMLPMethod(),
-
-    ]
-
-    # Multi-prototype cosine (NEW)
-    if "MultiPrototypeCosineMethod" in opt:
-        base_methods.append(opt["MultiPrototypeCosineMethod"](k=4))
-
-    # ------------------------------------------------------------
-    # NEW: Weighted Ensemble over strong "judges"
-    # (create fresh instances; don't reuse those in base_methods)
-    # ------------------------------------------------------------
-    ensemble_judges: list[OnlineBaseMethod] = _make_ensemble_judges()
-    
-
-
-    base_methods.append(
-        WeightedEnsembleMethod(
-            judges=ensemble_judges,
-        )
-        
     )
 
-    # Pair-features LogReg (NEW) – requires pair-based data, skip in single-vector mode
-    # if "PairFeatureLogRegMethod" in opt:
-    #     base_methods.append(opt["PairFeatureLogRegMethod"]())
+    # ============================================================
+    # Main proposed method
+    # ============================================================
+    methods.append(_make_main_whitened_method())
 
-    # AUC-weighted diff (NEW) – requires pair-based data, skip in single-vector mode
-    # if "AUCWeightedDiffMethod" in opt:
-    #     base_methods.append(opt["AUCWeightedDiffMethod"](drop_frac=0.10))
+    # ============================================================
+    # Optional strong related methods
+    # ============================================================
+    if include_optional:
+        MahalanobisDeltaMethod = _optional_class(
+            "mahalanobis_delta",
+            "MahalanobisDeltaMethod",
+        )
+        if MahalanobisDeltaMethod is not None:
+            methods.append(MahalanobisDeltaMethod())
 
-    # Isotonic calibration (NEW) – requires pair-based data, skip in single-vector mode
-    # if "IsotonicCalibratedCosineMethod" in opt:
-    #     base_methods.append(opt["IsotonicCalibratedCosineMethod"]())
+        MultiPrototypeCosineMethod = _optional_class(
+            "multiprototype_cosine",
+            "MultiPrototypeCosineMethod",
+        )
+        if MultiPrototypeCosineMethod is not None:
+            methods.append(MultiPrototypeCosineMethod(k=4))
 
-    # Strong tree baseline (NEW) – requires pair-based data, skip in single-vector mode
-    # if "HistGBDTMethod" in opt:
-    #     base_methods.append(opt["HistGBDTMethod"](max_depth=3))
+    # ============================================================
+    # Linear / neural baselines
+    # ============================================================
+    methods.extend(
+        [
+            VectorWeightedMethod(),
+            LogisticRegressionMethod(),
+            LDAMethod(),
+            TinyMLPMethod(),
+        ]
+    )
 
-    # Optional XGB
+    # ============================================================
+    # Weighted ensemble
+    # ============================================================
+    if include_ensemble:
+        methods.append(
+            WeightedEnsembleMethod(
+                judges=_make_ensemble_judges(has_xgb),
+            )
+        )
+
+    # ============================================================
+    # Ablation suite
+    # ============================================================
+    if include_ablations:
+        methods.extend(_make_ablation_suite())
+
+    # ============================================================
+    # XGBoost baseline
+    # ============================================================
     if has_xgb:
-        from .xgboost import XGBoostLightMethod
-        base_methods.append(XGBoostLightMethod())
+        XGBoostLightMethod = _optional_class("xgboost", "XGBoostLightMethod")
+        if XGBoostLightMethod is not None:
+            methods.append(XGBoostLightMethod())
+
+    return _dedupe_by_name(methods)
 
 
-    # ============================================================
-    # Projected methods (keep only ones that make geometric sense)
-    # ============================================================
-    # projected_methods: list[OnlineBaseMethod] = [
-    #     # Projected ensemble variants (projection applied before ensemble fit)
-    #     # LDA projections
-    #     ProjectedMethod(
-    #         name="LDA1+LogReg",
-    #         base_method=LogisticRegressionMethod(),
-    #         proj_kind="lda",
-    #         proj_dim=1,
-    #     ),
-
-    #     # PCA only with strong linear-ish models
-    #     ProjectedMethod(
-    #         name="PCA16+LogReg",
-    #         base_method=LogisticRegressionMethod(),
-    #         proj_kind="pca",
-    #         proj_dim=16,
-    #     ),
-    #     ProjectedMethod(
-    #         name="PCA32+LogReg",
-    #         base_method=LogisticRegressionMethod(),
-    #         proj_kind="pca",
-    #         proj_dim=32,
-    #     ),
-    #     ProjectedMethod(
-    #         name="PCA16+VecWeighted",
-    #         base_method=VectorWeightedMethod(),
-    #         proj_kind="pca",
-    #         proj_dim=16,
-    #     ),
-    #     ProjectedMethod(
-    #         name="PCA32+VecWeighted",
-    #         base_method=VectorWeightedMethod(),
-    #         proj_kind="pca",
-    #         proj_dim=32,
-    #     ),
-
-    # ]
-
-    # ============================================================
-    # Cosine-augmented (keep the winners)
-    # ============================================================
-    # cosine_augmented_methods: list[OnlineBaseMethod] = [
-    #     CosineAugmentedMethod(
-    #         name="Cos+LDA1+LogReg",
-    #         base_method=LogisticRegressionMethod(),
-    #         proj_kind="lda",
-    #         proj_dim=1,
-    #     ),
-    #     CosineAugmentedMethod(
-    #         name="Cos+PCA8+LogReg",
-    #         base_method=LogisticRegressionMethod(),
-    #         proj_kind="pca",
-    #         proj_dim=8,
-    #     ),
-    #     CosineAugmentedMethod(
-    #         name="Cos+PCA16+LogReg",
-    #         base_method=LogisticRegressionMethod(),
-    #         proj_kind="pca",
-    #         proj_dim=16,
-    #     ),
-    #     CosineAugmentedMethod(
-    #         name="Cos+LDA1+VecWgt",
-    #         base_method=VectorWeightedMethod(),
-    #         proj_kind="lda",
-    #         proj_dim=1,
-    #     ),
-    # ]
-
-    return base_methods 
+__all__ = [
+    "OnlineBaseMethod",
+    "CosineMethod",
+    "VectorWeightedMethod",
+    "LogisticRegressionMethod",
+    "LDAMethod",
+    "WhitenedCosineMethod",
+    "WeightedEnsembleMethod",
+    "TinyMLPMethod",
+    "AndBoxHCMethod",
+    "HadamardCosineMethod",
+    "available_ablations",
+    "make_ablation_methods",
+    "CANONICAL_ABLATIONS",
+    "AblationMode",
+    "get_default_methods",
+]

@@ -21,6 +21,18 @@ import numpy as np
 CandidateEvaluator = Callable[[Any, Dict[str, Any], Any], Tuple[List[Dict[str, Any]], Dict[str, Any]]]
 
 
+def _method_name_matches(candidate: str, target: str) -> bool:
+    candidate_norm = str(candidate).strip().lower().replace(" ", "")
+    target_norm = str(target).strip().lower().replace(" ", "")
+    if candidate_norm == target_norm:
+        return True
+    aliases = {
+        "pcawhitenedcosine": {"whitenedcosine"},
+        "whitenedcosine": {"pcawhitenedcosine"},
+    }
+    return candidate_norm in aliases.get(target_norm, set())
+
+
 @dataclass
 class OptunaSearchResult:
     best_params: Dict[str, Any]
@@ -219,8 +231,10 @@ def sample_search_params(
         1e-2,
     )
     params["tiny_mlp_max_iter"] = trial.suggest_categorical("tiny_mlp_max_iter", [200, 400, 800, 1200])
+    params["tiny_mlp_batch_size"] = trial.suggest_categorical("tiny_mlp_batch_size", [32, 64, 128, 256, "auto"])
     params["tiny_mlp_activation"] = trial.suggest_categorical("tiny_mlp_activation", ["relu", "tanh"])
     params["tiny_mlp_early_stopping"] = trial.suggest_categorical("tiny_mlp_early_stopping", [False, True])
+    params["tiny_mlp_validation_fraction"] = trial.suggest_float("tiny_mlp_validation_fraction", 0.05, 0.4)
 
     params["lda_solver"] = trial.suggest_categorical("lda_solver", ["lsqr", "eigen", "svd"])
     if params["lda_solver"] == "svd":
@@ -358,7 +372,7 @@ def score_candidate_rows(
         return -1e9, {}
 
     if target_method not in {"", "all", "best", "best_feasible"}:
-        filtered = [r for r in rows if str(r.get("method", "")) == target_method]
+        filtered = [r for r in rows if _method_name_matches(str(r.get("method", "")), target_method)]
     else:
         filtered = rows
     if not filtered:
@@ -371,31 +385,26 @@ def score_candidate_rows(
             return float(r.get("discounted_score", r.get("micro_tpr", r.get("tpr", float("nan")))))
         return float(r.get("micro_tpr", r.get("tpr", float("nan"))))
 
-    scored: List[tuple[float, Dict[str, Any]]] = []
+    # Enforce FPR constraint strictly: consider only rows with micro_fpr <= alpha.
+    feasible: List[tuple[float, Dict[str, Any]]] = []
     for r in filtered:
         val = _metric_value(r)
         fpr = float(r.get("micro_fpr", r.get("fpr", float("inf"))))
         if not np.isfinite(val):
             continue
         if not np.isfinite(fpr):
-            fpr = float("inf")
-        violation = max(0.0, fpr - float(alpha))
-        objective = val - float(fpr_penalty) * violation
-        if violation <= 1e-12:
-            objective += 1e-6 * (float(alpha) - fpr)
-        scored.append((float(objective), r))
+            continue
+        if fpr <= float(alpha) + 1e-12:
+            feasible.append((float(val), r))
 
-    if not scored:
+    if not feasible:
+        # No feasible candidate found under the FPR constraint.
         return -1e9, {}
 
-    scored.sort(
-        key=lambda item: (
-            item[0],
-            -max(0.0, float(item[1].get("micro_fpr", item[1].get("fpr", float("inf")))) - float(alpha)),
-        ),
-        reverse=True,
-    )
-    return scored[0]
+    # Pick the candidate with highest metric (TPR/utility). Tie-break by lower FPR.
+    feasible.sort(key=lambda item: (item[0], -float(item[1].get("micro_fpr", item[1].get("fpr", float("inf"))))), reverse=True)
+    best_value, best_row = feasible[0]
+    return float(best_value), best_row
 
 
 def run_optuna_search(

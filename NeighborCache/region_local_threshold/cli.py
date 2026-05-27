@@ -18,23 +18,30 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from np_bench.utils import make_run_dir, save_csv_rows, save_json
-from np_bench.methods.base import OnlineBaseMethod
-
 from .io_helpers import resolve_npz_path, load_npz, resolve_features
 from .io_helpers import resolve_text_pairs, resolve_train_pairwise_cosine
 from .methods import build_methods, needs_weights
 from .splits import (
     GlobalSplit,
     filter_global_split_by_score_range,
-    filter_region_splits_by_score_range,
     filter_region_splits_by_score_range_detailed,
-    split_indices_per_region,
     split_indices_per_region_detailed,
     split_global,
 )
-from .evaluation import fit_all_methods, evaluate_methods, evaluate_methods_global, aggregate_ranking, _select_tau, apply_threshold
+from .evaluation import fit_all_methods, evaluate_methods, evaluate_methods_global, aggregate_ranking
+from . import evaluation as evaluation_mod
 from .display import print_trial_table, print_ranking
-from .stopping_mechanism import OnlineStopper, StopConfig
+from .online_stopping_eval import (
+    _run_online_stopping,
+    _sample_monitor_from_global_eval,
+    _sample_monitor_from_region_splits,
+)
+from .preprocessing import (
+    _build_hadamard_features,
+    _build_semantic_buckets_from_regions,
+    _build_tau_cluster_map,
+    _l2_normalize_rows,
+)
 from .ocats_baselines import run_ocats_baselines_for_split
 from NeighborCache.optimization.optuna_search import (
     apply_params_to_namespace,
@@ -48,221 +55,6 @@ OUT_BASE = NC_ROOT / "outputs" / "region_local_threshold"
 
 REGION_KEY_ALIASES = {
 }
-
-
-def _l2_normalize_rows(X: np.ndarray, eps: float = 1e-12) -> np.ndarray:
-    X = np.asarray(X, dtype=np.float32)
-    denom = np.linalg.norm(X, axis=1, keepdims=True)
-    return (X / np.maximum(denom, eps)).astype(np.float32, copy=False)
-
-
-def _select_region_anchor_vectors(
-    X_main: np.ndarray,
-    region_id: np.ndarray,
-    *,
-    strategy: str,
-    seed: int,
-) -> Dict[int, np.ndarray]:
-    """Select one L2-normalized anchor vector per region."""
-    Xn = _l2_normalize_rows(X_main)
-    region_id = np.asarray(region_id, dtype=np.int64).reshape(-1)
-    rng = np.random.default_rng(seed)
-
-    anchors_by_rid: Dict[int, np.ndarray] = {}
-    for rid in np.unique(region_id):
-        idx = np.flatnonzero(region_id == rid)
-        if idx.size == 0:
-            continue
-        Xr = Xn[idx]
-
-        if strategy == "random":
-            anchor_local = int(rng.integers(0, idx.size))
-        else:
-            centroid = np.mean(Xr, axis=0)
-            centroid = centroid / max(float(np.linalg.norm(centroid)), 1e-12)
-            sims = Xr @ centroid
-            anchor_local = int(np.argmax(sims))
-
-        anchors_by_rid[int(rid)] = np.asarray(Xr[anchor_local], dtype=np.float32).copy()
-
-    return anchors_by_rid
-
-
-def _build_hadamard_features(
-    X_main: np.ndarray,
-    region_id: np.ndarray,
-    *,
-    strategy: str,
-    seed: int,
-    use_delta_vec: bool = False,
-    use_abs_diff: bool = False,
-    abs_diff_only: bool = False,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Build region-anchor features and cosine-to-anchor from feature vectors.
-
-    Returns:
-      features: (N, D | 2D) float32 depending on enabled parts
-      cosine_to_anchor: (N, 1) float32
-    """
-    Xn = _l2_normalize_rows(X_main)
-    region_id = np.asarray(region_id, dtype=np.int64).reshape(-1)
-    N, D = Xn.shape
-
-    anchors_by_rid = _select_region_anchor_vectors(
-        X_main,
-        region_id,
-        strategy=strategy,
-        seed=seed,
-    )
-    anchors = np.zeros((N, D), dtype=np.float32)
-    for rid in np.unique(region_id):
-        idx = np.flatnonzero(region_id == rid)
-        if idx.size == 0:
-            continue
-        anchor = anchors_by_rid.get(int(rid))
-        if anchor is None:
-            continue
-        anchors[idx] = anchor
-
-    had = (Xn * anchors).astype(np.float32, copy=False)
-    parts: List[np.ndarray] = []
-    if not abs_diff_only:
-        parts.append(had)
-    if use_delta_vec:
-        delta = (Xn - anchors).astype(np.float32, copy=False)
-        parts.append(delta)
-    elif use_abs_diff:
-        abs_diff = np.abs(Xn - anchors).astype(np.float32, copy=False)
-        parts.append(abs_diff)
-
-    if not parts:
-        raise ValueError(
-            "No anchor-feature components selected. "
-            "Enable --hadamard_preprocess and/or --use_abs_diff/--use_delta_vec."
-        )
-    X_pair = np.concatenate(parts, axis=1).astype(np.float32, copy=False)
-
-    # Keep cosine-to-anchor defined from the Hadamard term only.
-    cos = np.sum(had, axis=1, keepdims=True).astype(np.float32, copy=False)
-    return X_pair, cos
-
-
-def _kmeans_numpy(
-    X: np.ndarray,
-    n_clusters: int,
-    *,
-    seed: int,
-    max_iter: int = 60,
-) -> np.ndarray:
-    X = np.asarray(X, dtype=np.float64)
-    n = X.shape[0]
-    if n == 0:
-        return np.zeros(0, dtype=np.int64)
-    k = int(max(1, min(n_clusters, n)))
-    rng = np.random.default_rng(seed)
-
-    centers = X[rng.choice(n, size=k, replace=False)].copy()
-    labels = np.zeros(n, dtype=np.int64)
-    for _ in range(max_iter):
-        d2 = np.sum((X[:, None, :] - centers[None, :, :]) ** 2, axis=2)
-        new_labels = np.argmin(d2, axis=1).astype(np.int64)
-        if np.array_equal(new_labels, labels):
-            break
-        labels = new_labels
-        for j in range(k):
-            m = labels == j
-            if np.any(m):
-                centers[j] = X[m].mean(axis=0)
-            else:
-                centers[j] = X[rng.integers(0, n)]
-    return labels
-
-
-def _build_tau_cluster_map(
-    *,
-    splits: List[Any],
-    X_anchor_source: np.ndarray,
-    region_id: np.ndarray,
-    anchor_strategy: str,
-    n_clusters: int,
-    seed: int,
-) -> Dict[int, int]:
-    if not splits:
-        return {}
-
-    anchors_by_rid = _select_region_anchor_vectors(
-        X_anchor_source,
-        region_id,
-        strategy=anchor_strategy,
-        seed=seed,
-    )
-
-    rids = sorted({int(s.rid) for s in splits})
-    if not rids:
-        return {}
-
-    anchor_rows: List[np.ndarray] = []
-    used_rids: List[int] = []
-    for rid in rids:
-        a = anchors_by_rid.get(rid)
-        if a is None:
-            continue
-        anchor_rows.append(np.asarray(a, dtype=np.float32))
-        used_rids.append(int(rid))
-
-    if not used_rids:
-        return {}
-
-    A = np.asarray(anchor_rows, dtype=np.float32)
-    labels = _kmeans_numpy(A, n_clusters=n_clusters, seed=seed)
-    return {rid: int(labels[i]) for i, rid in enumerate(used_rids)}
-
-
-def _build_semantic_buckets_from_regions(
-    X_main: np.ndarray,
-    source_region_id: np.ndarray,
-    *,
-    n_buckets: int,
-    seed: int,
-    anchor_strategy: str,
-) -> tuple[np.ndarray, Dict[int, int]]:
-    """Build coarse semantic buckets by clustering per-region anchor vectors.
-
-    Returns per-sample bucket ids and the source-region to bucket mapping.
-    """
-    X = np.asarray(X_main, dtype=np.float32)
-    if X.ndim != 2 or X.shape[1] <= 1:
-        raise ValueError(
-            "On-the-fly sem_bucket generation requires embedding-like features "
-            f"with shape (N,D), D>1; got {X.shape}"
-        )
-
-    src_rid = np.asarray(source_region_id, dtype=np.int64).reshape(-1)
-    if src_rid.shape[0] != X.shape[0]:
-        raise ValueError(
-            f"sem_bucket source-region length mismatch: {src_rid.shape[0]} vs {X.shape[0]}"
-        )
-
-    anchors_by_rid = _select_region_anchor_vectors(
-        X,
-        src_rid,
-        strategy=anchor_strategy,
-        seed=seed,
-    )
-    src_regions = sorted(anchors_by_rid.keys())
-    if not src_regions:
-        return np.zeros(X.shape[0], dtype=np.int64), {}
-
-    A = np.asarray([anchors_by_rid[r] for r in src_regions], dtype=np.float32)
-    labels = _kmeans_numpy(A, n_clusters=max(1, int(n_buckets)), seed=seed)
-    rid_to_bucket = {int(r): int(labels[i]) for i, r in enumerate(src_regions)}
-
-    bucket_id = np.fromiter(
-        (rid_to_bucket[int(r)] for r in src_rid.tolist()),
-        dtype=np.int64,
-        count=src_rid.shape[0],
-    )
-    return bucket_id, rid_to_bucket
 
 
 def _concat_indices(parts: List[np.ndarray]) -> np.ndarray:
@@ -586,6 +378,857 @@ def _log_train_cosine_policy_stats(stats: Dict[str, Any]) -> None:
         )
 
 
+def _online_stopping_as_method(args: argparse.Namespace) -> bool:
+    if not bool(getattr(args, "enable_online_stopping", False)):
+        return False
+    explicit = getattr(args, "online_stopping_as_method", None)
+    if explicit is not None:
+        return bool(explicit)
+    return not bool(getattr(args, "early_stop_train_subset", False))
+
+
+def _validate_online_used_indices(
+    *,
+    y: np.ndarray,
+    used_h0_train_idx: np.ndarray,
+    used_h1_train_idx: np.ndarray,
+) -> None:
+    h0 = np.asarray(used_h0_train_idx, dtype=np.int64).reshape(-1)
+    h1 = np.asarray(used_h1_train_idx, dtype=np.int64).reshape(-1)
+    if h0.size == 0 or h1.size == 0:
+        raise RuntimeError(
+            "early_stop_train_subset requested but online stopping returned an empty used train class"
+        )
+    if int(np.max(np.concatenate([h0, h1]))) >= int(y.shape[0]):
+        raise RuntimeError("early_stop_train_subset returned an out-of-range dataset index")
+    if not np.all(np.asarray(y[h0], dtype=np.int32) == 0):
+        raise RuntimeError("early_stop_train_subset returned non-H0 labels in used_h0_train_idx")
+    if not np.all(np.asarray(y[h1], dtype=np.int32) == 1):
+        raise RuntimeError("early_stop_train_subset returned non-H1 labels in used_h1_train_idx")
+
+
+def _replace_global_train_indices(
+    gs: GlobalSplit,
+    *,
+    used_h0_train_idx: np.ndarray,
+    used_h1_train_idx: np.ndarray,
+) -> GlobalSplit:
+    return GlobalSplit(
+        H0_train=np.asarray(used_h0_train_idx, dtype=np.int64).reshape(-1),
+        H1_train=np.asarray(used_h1_train_idx, dtype=np.int64).reshape(-1),
+        H0_calib=gs.H0_calib,
+        H1_calib=gs.H1_calib,
+        H0_eval=gs.H0_eval,
+        H1_eval=gs.H1_eval,
+    )
+
+
+def _replace_region_train_indices(
+    splits: List[Any],
+    *,
+    used_h0_train_idx: np.ndarray,
+    used_h1_train_idx: np.ndarray,
+    region_id: np.ndarray,
+) -> List[Any]:
+    h0 = np.asarray(used_h0_train_idx, dtype=np.int64).reshape(-1)
+    h1 = np.asarray(used_h1_train_idx, dtype=np.int64).reshape(-1)
+    h0_by_rid: Dict[int, np.ndarray] = {}
+    h1_by_rid: Dict[int, np.ndarray] = {}
+    h0_rids = np.unique(region_id[h0]) if h0.size > 0 else np.array([], dtype=np.int64)
+    h1_rids = np.unique(region_id[h1]) if h1.size > 0 else np.array([], dtype=np.int64)
+    for rid in h0_rids:
+        h0_by_rid[int(rid)] = h0[region_id[h0] == int(rid)]
+    for rid in h1_rids:
+        h1_by_rid[int(rid)] = h1[region_id[h1] == int(rid)]
+
+    out: List[Any] = []
+    for s in splits:
+        rid = int(s.rid)
+        out.append(
+            type(s)(
+                rid=rid,
+                H0_train=h0_by_rid.get(rid, np.array([], dtype=np.int64)),
+                H1_train=h1_by_rid.get(rid, np.array([], dtype=np.int64)),
+                H0_calib=s.H0_calib,
+                H1_calib=s.H1_calib,
+                H0_eval=s.H0_eval,
+                H1_eval=s.H1_eval,
+            )
+        )
+    return out
+
+
+def _augment_online_summary(
+    summary: Dict[str, Any],
+    *,
+    early_stop_train_subset_active: bool,
+    early_stop_train_subset_applied: bool,
+    online_stopping_as_method: bool,
+) -> Dict[str, Any]:
+    out = dict(summary)
+    original_total = int(out.get("original_total_train", 0))
+    used_total = int(out.get("used_total_train", out.get("samples_total_used", 0)))
+    out.update(
+        {
+            "early_stop_train_subset_active": bool(early_stop_train_subset_active),
+            "early_stop_train_subset_applied": bool(early_stop_train_subset_applied),
+            "online_stopping_as_method": bool(online_stopping_as_method),
+            "online_stopped": bool(out.get("stopped", False)),
+            "online_stop_reason": str(out.get("reason", "unknown")),
+            "online_updates": int(out.get("updates", 0)),
+            "online_samples_streamed": int(out.get("samples_streamed", 0)),
+            "train_fraction": (
+                float(out.get("train_fraction"))
+                if "train_fraction" in out and np.isfinite(float(out.get("train_fraction", float("nan"))))
+                else (float(used_total / original_total) if original_total > 0 else float("nan"))
+            ),
+        }
+    )
+    return out
+
+
+def _print_online_stopping_log(
+    *,
+    history_rows: List[Dict[str, Any]],
+    summary: Dict[str, Any],
+) -> None:
+    if history_rows:
+        last = history_rows[-1]
+        print(
+            "  online_stopping: "
+            f"checks={summary.get('history_len', 0)} "
+            f"stopped={summary.get('stopped')} reason={summary.get('reason')} "
+            f"tpr={float(last.get('tpr_monitor', float('nan'))):.4f} "
+            f"fpr={float(last.get('fpr_monitor', float('nan'))):.4f} "
+            f"tau={float(last.get('tau', float('nan'))):.4f} "
+            f"samples_used={summary.get('samples_total_used', 0)}"
+        )
+
+
+def _print_early_stop_train_subset_log(summary: Dict[str, Any]) -> None:
+    original_total = int(summary.get("original_total_train", 0))
+    used_total = int(summary.get("used_total_train", 0))
+    train_fraction = float(used_total / original_total) if original_total > 0 else float("nan")
+    print("  early_stop_train_subset:")
+    print(
+        "    "
+        f"used_h0_train={int(summary.get('used_h0_train', 0))} "
+        f"used_h1_train={int(summary.get('used_h1_train', 0))} "
+        f"used_total_train={used_total}"
+    )
+    print(
+        "    "
+        f"original_h0_train={int(summary.get('original_h0_train', 0))} "
+        f"original_h1_train={int(summary.get('original_h1_train', 0))} "
+        f"train_fraction={train_fraction:.4f}"
+    )
+    print(
+        "    "
+        f"stopped={summary.get('stopped')} "
+        f"reason={summary.get('reason')} "
+        f"updates={int(summary.get('updates', 0))} "
+        f"samples_streamed={int(summary.get('samples_streamed', 0))}"
+    )
+
+
+def _record_online_stopping_outputs(
+    *,
+    trial: int,
+    seed: int,
+    history_rows: List[Dict[str, Any]],
+    summary: Dict[str, Any],
+    early_stop_train_subset_active: bool,
+    early_stop_train_subset_applied: bool,
+    online_stopping_as_method: bool,
+    online_stopping_history_rows: List[Dict[str, Any]],
+    online_stopping_summary_rows: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    summary_out = _augment_online_summary(
+        summary,
+        early_stop_train_subset_active=early_stop_train_subset_active,
+        early_stop_train_subset_applied=early_stop_train_subset_applied,
+        online_stopping_as_method=online_stopping_as_method,
+    )
+    if history_rows:
+        for r in history_rows:
+            r["trial"] = int(trial)
+            r["seed"] = int(seed)
+        online_stopping_history_rows.extend(history_rows)
+        _print_online_stopping_log(history_rows=history_rows, summary=summary_out)
+    else:
+        print(
+            "  [WARN] online_stopping skipped: "
+            f"reason={summary_out.get('reason', 'unknown')}"
+        )
+    if early_stop_train_subset_applied:
+        _print_early_stop_train_subset_log(summary_out)
+    online_stopping_summary_rows.append(
+        {
+            "trial": int(trial),
+            "seed": int(seed),
+            **summary_out,
+        }
+    )
+    return summary_out
+
+
+def _train_sample_count_meta(
+    *,
+    h0_train_idx: np.ndarray,
+    h1_train_idx: np.ndarray,
+    source: str,
+) -> Dict[str, Any]:
+    n0 = int(np.asarray(h0_train_idx, dtype=np.int64).reshape(-1).size)
+    n1 = int(np.asarray(h1_train_idx, dtype=np.int64).reshape(-1).size)
+    total = int(n0 + n1)
+    return {
+        "train_h0_samples": n0,
+        "train_h1_samples": n1,
+        "train_total_samples": total,
+        "train_samples_needed": total,
+        "train_sample_source": str(source),
+    }
+
+
+def _online_method_train_count_meta(summary: Dict[str, Any]) -> Dict[str, Any]:
+    n0 = int(summary.get("used_h0_train", 0))
+    n1 = int(summary.get("used_h1_train", 0))
+    total = int(summary.get("used_total_train", n0 + n1))
+    return {
+        "train_h0_samples": n0,
+        "train_h1_samples": n1,
+        "train_total_samples": total,
+        "train_samples_needed": total,
+        "train_sample_source": "online_stopping_method",
+    }
+
+
+def _annotate_train_sample_counts(
+    rows: List[Dict[str, Any]],
+    *,
+    h0_train_idx: np.ndarray,
+    h1_train_idx: np.ndarray,
+    source: str,
+    method_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> None:
+    default_meta = _train_sample_count_meta(
+        h0_train_idx=h0_train_idx,
+        h1_train_idx=h1_train_idx,
+        source=source,
+    )
+    overrides = method_overrides or {}
+    for row in rows:
+        meta = overrides.get(str(row.get("method", "")), default_meta)
+        row.update(meta)
+
+
+def _attach_train_sample_counts_to_ranking(
+    ranking: List[Dict[str, Any]],
+    trial_summary_rows: List[Dict[str, Any]],
+) -> None:
+    by_method: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for row in trial_summary_rows:
+        method = str(row.get("method", ""))
+        if method:
+            by_method[method].append(row)
+
+    for row in ranking:
+        method = str(row.get("method", ""))
+        method_rows = by_method.get(method, [])
+        counts = [
+            float(r["train_samples_needed"])
+            for r in method_rows
+            if r.get("train_samples_needed") not in (None, "")
+        ]
+        if not counts:
+            continue
+        h0_counts = [
+            float(r["train_h0_samples"])
+            for r in method_rows
+            if r.get("train_h0_samples") not in (None, "")
+        ]
+        h1_counts = [
+            float(r["train_h1_samples"])
+            for r in method_rows
+            if r.get("train_h1_samples") not in (None, "")
+        ]
+        sources = sorted(
+            {
+                str(r.get("train_sample_source", ""))
+                for r in method_rows
+                if str(r.get("train_sample_source", ""))
+            }
+        )
+        row.update(
+            {
+                "mean_train_samples_needed": float(np.mean(counts)),
+                "min_train_samples_needed": int(np.min(counts)),
+                "max_train_samples_needed": int(np.max(counts)),
+                "mean_train_n": float(np.mean(counts)),
+                "min_train_n": int(np.min(counts)),
+                "max_train_n": int(np.max(counts)),
+                "mean_train_h0_samples": float(np.mean(h0_counts)) if h0_counts else float("nan"),
+                "mean_train_h1_samples": float(np.mean(h1_counts)) if h1_counts else float("nan"),
+                "train_sample_sources": sources,
+            }
+        )
+
+
+def _build_cache_efficiency_ranking(
+    ranking: List[Dict[str, Any]],
+    *,
+    alpha: float,
+    tpr_tolerance: float,
+) -> List[Dict[str, Any]]:
+    safe_rows = [
+        r for r in ranking
+        if float(r.get("valid_rate", 0.0)) >= 1.0 - 1e-12
+        and float(r.get("mean_eval_fpr", r.get("mean_micro_fpr", float("inf")))) <= float(alpha) + 1e-12
+        and float(r.get("max_eval_fpr", float("inf"))) <= float(alpha) + 1e-12
+    ]
+    if not safe_rows:
+        return []
+
+    best_tpr = max(float(r.get("mean_eval_tpr", r.get("mean_micro_tpr", float("-inf")))) for r in safe_rows)
+    near_best = [
+        dict(r)
+        for r in safe_rows
+        if float(r.get("mean_eval_tpr", r.get("mean_micro_tpr", float("-inf")))) >= best_tpr - float(tpr_tolerance)
+    ]
+    def cache_sort_train_n(row: Dict[str, Any]) -> float:
+        out = float(row.get("mean_train_n", row.get("mean_train_samples_needed", float("inf"))))
+        return out if np.isfinite(out) else float("inf")
+
+    near_best.sort(
+        key=lambda r: (
+            cache_sort_train_n(r),
+            -float(r.get("mean_eval_tpr", r.get("mean_micro_tpr", float("-inf")))),
+            float(r.get("mean_eval_fpr", r.get("mean_micro_fpr", float("inf")))),
+        )
+    )
+    for i, row in enumerate(near_best, start=1):
+        row["cache_efficiency_rank"] = int(i)
+        row["cache_efficiency_best_valid_tpr"] = float(best_tpr)
+        row["cache_efficiency_tpr_tolerance"] = float(tpr_tolerance)
+    return near_best
+
+
+def _parse_int_csv(raw: Optional[str]) -> List[int]:
+    if raw is None:
+        return []
+    txt = str(raw).strip()
+    if not txt:
+        return []
+
+    out: List[int] = []
+    for part in txt.split(","):
+        p = part.strip()
+        if not p:
+            continue
+        out.append(int(p))
+    return out
+
+
+def _build_train_dosage_grid(
+    h0_train_idx: np.ndarray,
+    h1_train_idx: np.ndarray,
+    *,
+    raw_grid: Optional[str],
+    no_auto_full: bool = False,
+    max_train: Optional[int] = None,
+) -> List[int]:
+    full_total = int(np.asarray(h0_train_idx).size + np.asarray(h1_train_idx).size)
+    if full_total <= 0:
+        return []
+
+    parsed = _parse_int_csv(raw_grid)
+    if parsed:
+        grid = []
+        for v in parsed:
+            vv = int(v)
+            if vv <= 1:
+                continue
+            if vv > full_total:
+                if no_auto_full:
+                    continue
+                vv = full_total
+            grid.append(vv)
+        if not no_auto_full:
+            grid.append(full_total)
+    else:
+        start = 2 * max(1, min(int(np.asarray(h0_train_idx).size), int(np.asarray(h1_train_idx).size), 32))
+        grid = []
+        n = int(start)
+        while n < full_total:
+            grid.append(n)
+            n *= 2
+        if not no_auto_full:
+            grid.append(full_total)
+
+    grid = [int(min(max(2, v), full_total)) for v in grid]
+    if max_train is not None:
+        cap = int(max_train)
+        grid = [v for v in grid if v <= cap]
+
+    grid = sorted({int(v) for v in grid})
+    if not no_auto_full and max_train is None and full_total not in grid:
+        grid.append(full_total)
+    return grid
+
+
+def _subset_train_indices_for_dosage(
+    h0_train_idx: np.ndarray,
+    h1_train_idx: np.ndarray,
+    *,
+    total_train_samples: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    h0 = np.asarray(h0_train_idx, dtype=np.int64).reshape(-1)
+    h1 = np.asarray(h1_train_idx, dtype=np.int64).reshape(-1)
+    full_total = int(h0.size + h1.size)
+    target = int(min(max(2, total_train_samples), full_total))
+    if target >= full_total:
+        return h0, h1
+
+    if h0.size == 0 or h1.size == 0:
+        return h0[:0], h1[:0]
+
+    n0 = int(round(target * (h0.size / max(1, full_total))))
+    n0 = int(min(max(1, n0), h0.size))
+    n1 = int(target - n0)
+    if n1 < 1:
+        n1 = 1
+        n0 = int(min(h0.size, target - n1))
+    if n1 > h1.size:
+        n1 = int(h1.size)
+        n0 = int(min(h0.size, target - n1))
+    if n0 < 1:
+        n0 = 1
+        n1 = int(min(h1.size, target - n0))
+
+    return h0[:n0], h1[:n1]
+
+
+def _fit_one_method_on_global_indices(
+    *,
+    method_name: str,
+    method: Any,
+    h0_train_idx: np.ndarray,
+    h1_train_idx: np.ndarray,
+    h0_calib_idx: np.ndarray,
+    h1_calib_idx: np.ndarray,
+    X_main: np.ndarray,
+    X_cos: Optional[np.ndarray],
+    X_text: Optional[np.ndarray],
+    region_id: np.ndarray,
+    args: argparse.Namespace,
+    seed: int,
+    trial: int,
+    failures: Dict[str, List[str]],
+    fit_context: str,
+) -> Optional[Any]:
+    h0_train_idx = np.asarray(h0_train_idx, dtype=np.int64).reshape(-1)
+    h1_train_idx = np.asarray(h1_train_idx, dtype=np.int64).reshape(-1)
+    h0_train_unique = np.unique(h0_train_idx) if h0_train_idx.size > 0 else h0_train_idx
+    h1_train_unique = np.unique(h1_train_idx) if h1_train_idx.size > 0 else h1_train_idx
+
+    H0_train = X_main[h0_train_idx]
+    H1_train = X_main[h1_train_idx]
+    H0_calib_pure = X_main[h0_calib_idx]
+    H1_calib_pure = X_main[h1_calib_idx]
+    H0_calib_eff = X_main[np.concatenate([h0_train_unique, h0_calib_idx])] \
+        if h0_train_unique.size > 0 else H0_calib_pure
+    H1_calib_eff = X_main[np.concatenate([h1_train_unique, h1_calib_idx])] \
+        if h1_train_unique.size > 0 else H1_calib_pure
+
+    H0_train_cos = X_cos[h0_train_idx] if X_cos is not None else None
+    H1_train_cos = X_cos[h1_train_idx] if X_cos is not None else None
+    if X_cos is not None:
+        H0_calib_pure_cos = X_cos[h0_calib_idx]
+        H1_calib_pure_cos = X_cos[h1_calib_idx]
+        H0_calib_eff_cos = X_cos[np.concatenate([h0_train_unique, h0_calib_idx])] \
+            if h0_train_unique.size > 0 else H0_calib_pure_cos
+        H1_calib_eff_cos = X_cos[np.concatenate([h1_train_unique, h1_calib_idx])] \
+            if h1_train_unique.size > 0 else H1_calib_pure_cos
+    else:
+        H0_calib_pure_cos = None
+        H1_calib_pure_cos = None
+        H0_calib_eff_cos = None
+        H1_calib_eff_cos = None
+
+    if X_text is not None:
+        H0_train_text = X_text[h0_train_idx]
+        H1_train_text = X_text[h1_train_idx]
+        H0_calib_eff_text = X_text[np.concatenate([h0_train_unique, h0_calib_idx])] \
+            if h0_train_unique.size > 0 else X_text[h0_calib_idx]
+        H1_calib_eff_text = X_text[np.concatenate([h1_train_unique, h1_calib_idx])] \
+            if h1_train_unique.size > 0 else X_text[h1_calib_idx]
+    else:
+        H0_train_text = None
+        H1_train_text = None
+        H0_calib_eff_text = None
+        H1_calib_eff_text = None
+
+    if H0_calib_eff.shape[0] == 0 or H1_calib_eff.shape[0] == 0:
+        failures[method_name].append(f"trial={trial}: dosage fit skipped due to empty effective calibration")
+        return None
+
+    v0 = np.var(H0_calib_eff, axis=0)
+    v1 = np.var(H1_calib_eff, axis=0)
+    weights = (v1 / (v0 + 1e-12)).astype(np.float32, copy=False)
+
+    fitted = {method_name: method}
+    fit_all_methods(
+        fitted,
+        H0_train=H0_train,
+        H1_train=H1_train,
+        H0_calib_eff=H0_calib_eff,
+        H1_calib_eff=H1_calib_eff,
+        H0_calib_pure=H0_calib_pure,
+        H1_calib_pure=H1_calib_pure,
+        H0_train_cos=H0_train_cos,
+        H1_train_cos=H1_train_cos,
+        H0_calib_eff_cos=H0_calib_eff_cos,
+        H1_calib_eff_cos=H1_calib_eff_cos,
+        H0_train_text=H0_train_text,
+        H1_train_text=H1_train_text,
+        H0_calib_eff_text=H0_calib_eff_text,
+        H1_calib_eff_text=H1_calib_eff_text,
+        H0_calib_pure_cos=H0_calib_pure_cos,
+        H1_calib_pure_cos=H1_calib_pure_cos,
+        H0_calib_region_ids=region_id[h0_calib_idx],
+        H1_calib_region_ids=region_id[h1_calib_idx],
+        tie_mode=args.tie_mode,
+        tau_guardrail=args.tau_guardrail,
+        tau_guardrail_delta=args.tau_guardrail_delta,
+        weights=weights,
+        seed=seed,
+        alpha=args.alpha,
+        trial=trial,
+        failures=failures,
+        fit_context=fit_context,
+    )
+    return fitted.get(method_name)
+
+
+def _run_global_train_dosage_search(
+    *,
+    method_names: List[str],
+    gs: GlobalSplit,
+    h0_monitor_idx: np.ndarray,
+    h1_monitor_idx: np.ndarray,
+    X_main: np.ndarray,
+    X_cos: Optional[np.ndarray],
+    X_text: Optional[np.ndarray],
+    region_id: np.ndarray,
+    args: argparse.Namespace,
+    seed: int,
+    trial: int,
+    failures: Dict[str, List[str]],
+) -> tuple[Dict[str, Any], Dict[str, Dict[str, Any]], List[Dict[str, Any]]]:
+    h0_monitor_idx = np.asarray(h0_monitor_idx, dtype=np.int64).reshape(-1)
+    h1_monitor_idx = np.asarray(h1_monitor_idx, dtype=np.int64).reshape(-1)
+    if h0_monitor_idx.size == 0 or h1_monitor_idx.size == 0:
+        raise RuntimeError(
+            "train dosage search requires a non-empty monitor split; "
+            "increase --n_monitor_h0/--n_monitor_h1 and --n_eval"
+        )
+
+    grid = _build_train_dosage_grid(
+        gs.H0_train,
+        gs.H1_train,
+        raw_grid=args.train_dosage_grid,
+        no_auto_full=bool(getattr(args, "train_dosage_no_auto_full", False)),
+        max_train=getattr(args, "train_dosage_max_train", None),
+    )
+    if not grid:
+        raise RuntimeError(
+            "train dosage search grid is empty after applying "
+            "--train_dosage_no_auto_full/--train_dosage_max_train; provide at least one valid dosage"
+        )
+    monitor_gs = GlobalSplit(
+        H0_train=gs.H0_train,
+        H1_train=gs.H1_train,
+        H0_calib=gs.H0_calib,
+        H1_calib=gs.H1_calib,
+        H0_eval=h0_monitor_idx,
+        H1_eval=h1_monitor_idx,
+    )
+
+    selected_methods: Dict[str, Any] = {}
+    selected_meta: Dict[str, Dict[str, Any]] = {}
+    search_rows: List[Dict[str, Any]] = []
+    tol = float(getattr(args, "train_dosage_tpr_tolerance", 0.01))
+    fpr_margin = float(getattr(args, "train_dosage_fpr_margin", 0.0))
+    fpr_limit = float(args.alpha) - fpr_margin
+    requested_grid = _parse_int_csv(args.train_dosage_grid)
+    max_train_arg = getattr(args, "train_dosage_max_train", None)
+    no_auto_full = bool(getattr(args, "train_dosage_no_auto_full", False))
+
+    print("  train_dosage_search:")
+    print(f"    requested_grid={requested_grid if requested_grid else 'auto'}")
+    print(f"    actual_grid={grid}")
+    print(f"    no_auto_full={no_auto_full}")
+    print(f"    max_train={max_train_arg if max_train_arg is not None else 'none'}")
+    print(f"    monitor(h0={int(h0_monitor_idx.size)}, h1={int(h1_monitor_idx.size)})")
+    print(f"    tpr_tolerance={tol:.4f}")
+    print(f"    fpr_margin={fpr_margin:.4f}")
+    print(f"    effective_monitor_fpr_limit={fpr_limit:.4f}")
+
+    for method_name in method_names:
+        candidate_rows: List[Dict[str, Any]] = []
+        candidate_methods: Dict[int, Any] = {}
+
+        for requested_total in grid:
+            h0_dose, h1_dose = _subset_train_indices_for_dosage(
+                gs.H0_train,
+                gs.H1_train,
+                total_train_samples=int(requested_total),
+            )
+            effective_total = int(h0_dose.size + h1_dose.size)
+            row_base: Dict[str, Any] = {
+                "trial": int(trial),
+                "seed": int(seed),
+                "method": str(method_name),
+                "requested_train_total": int(requested_total),
+                "train_dosage_total": int(effective_total),
+                "train_h0": int(h0_dose.size),
+                "train_h1": int(h1_dose.size),
+                "train_h0_samples": int(h0_dose.size),
+                "train_h1_samples": int(h1_dose.size),
+                "train_total_samples": int(effective_total),
+                "alpha": float(args.alpha),
+                "train_dosage_fpr_margin": float(fpr_margin),
+                "effective_monitor_fpr_limit": float(fpr_limit),
+                "fpr_feasible": False,
+                "selected": False,
+                "feasible": False,
+                "fit_failed": False,
+                "selection_reason": "",
+                "best_feasible_monitor_tpr": float("nan"),
+                "tpr_gap_from_best_feasible": float("nan"),
+                "train_dosage_tpr_tolerance": float(tol),
+                "train_dosage_max_train": int(max_train_arg) if max_train_arg is not None else None,
+                "train_dosage_no_auto_full": bool(no_auto_full),
+            }
+
+            fresh = _build_configured_methods(args, X_cos=X_cos, X_text=X_text, quiet=True)
+            if method_name not in fresh:
+                row = {
+                    **row_base,
+                    "fit_failed": True,
+                    "failure_reason": "method_not_configured",
+                }
+                candidate_rows.append(row)
+                search_rows.append(row)
+                continue
+
+            candidate_failures: Dict[str, List[str]] = defaultdict(list)
+            fit_cm = (
+                contextlib.nullcontext()
+                if bool(getattr(args, "debug_ablation_scores", False))
+                else contextlib.redirect_stdout(io.StringIO())
+            )
+            with fit_cm:
+                fitted_method = _fit_one_method_on_global_indices(
+                    method_name=method_name,
+                    method=fresh[method_name],
+                    h0_train_idx=h0_dose,
+                    h1_train_idx=h1_dose,
+                    h0_calib_idx=gs.H0_calib,
+                    h1_calib_idx=gs.H1_calib,
+                    X_main=X_main,
+                    X_cos=X_cos,
+                    X_text=X_text,
+                    region_id=region_id,
+                    args=args,
+                    seed=seed,
+                    trial=trial,
+                    failures=candidate_failures,
+                    fit_context="train_dosage_search",
+                )
+            if fitted_method is None:
+                reason = "; ".join(candidate_failures.get(method_name, [])) or "fit_failed"
+                row = {
+                    **row_base,
+                    "fit_failed": True,
+                    "failure_reason": reason[:500],
+                }
+                candidate_rows.append(row)
+                search_rows.append(row)
+                continue
+
+            monitor_failures: Dict[str, List[str]] = defaultdict(list)
+            eval_cm = (
+                contextlib.nullcontext()
+                if bool(getattr(args, "debug_ablation_scores", False))
+                else contextlib.redirect_stdout(io.StringIO())
+            )
+            with eval_cm:
+                monitor_rows = evaluate_methods_global(
+                    {method_name: fitted_method},
+                    [method_name],
+                    monitor_gs,
+                    X_main=X_main,
+                    X_cos=X_cos,
+                    X_text=X_text,
+                    alpha=float(args.alpha),
+                    tie_mode=args.tie_mode,
+                    tau_guardrail=args.tau_guardrail,
+                    tau_guardrail_delta=args.tau_guardrail_delta,
+                    trial=trial,
+                    seed=seed,
+                    region_key=args.region_key,
+                    region_id=region_id,
+                    failures=monitor_failures,
+                )
+            if not monitor_rows:
+                reason = "; ".join(monitor_failures.get(method_name, [])) or "monitor_eval_failed"
+                row = {
+                    **row_base,
+                    "fit_failed": True,
+                    "failure_reason": reason[:500],
+                }
+                candidate_rows.append(row)
+                search_rows.append(row)
+                continue
+
+            mr = monitor_rows[0]
+            monitor_fpr = float(mr.get("micro_fpr", float("inf")))
+            monitor_tpr = float(mr.get("micro_tpr", float("nan")))
+            fpr_feasible = bool(np.isfinite(monitor_fpr) and monitor_fpr <= fpr_limit + 1e-12)
+            row = {
+                **row_base,
+                "monitor_tpr": monitor_tpr,
+                "monitor_fpr": monitor_fpr,
+                "monitor_train_tpr": float(mr.get("train_tpr", float("nan"))),
+                "monitor_train_fpr": float(mr.get("train_fpr", float("nan"))),
+                "monitor_tau": float(mr.get("tau", float("nan"))),
+                "input_space": str(mr.get("input_space", "unknown")),
+                "time_ms": float(mr.get("time_ms", float("nan"))),
+                "fpr_feasible": fpr_feasible,
+                "feasible": fpr_feasible,
+                "failure_reason": "",
+            }
+            candidate_rows.append(row)
+            search_rows.append(row)
+            candidate_methods[effective_total] = fitted_method
+
+        valid_rows = [r for r in candidate_rows if not bool(r.get("fit_failed", False))]
+        if not valid_rows:
+            failures[method_name].append(f"trial={trial}: all train dosage candidates failed")
+            continue
+
+        feasible_rows = [
+            r for r in valid_rows
+            if bool(r.get("fpr_feasible", False)) and np.isfinite(float(r.get("monitor_tpr", float("nan"))))
+        ]
+        if feasible_rows:
+            best_tpr = max(float(r["monitor_tpr"]) for r in feasible_rows)
+            near_best = [
+                r for r in feasible_rows
+                if float(r["monitor_tpr"]) >= best_tpr - tol
+            ]
+            selected = min(
+                near_best,
+                key=lambda r: (
+                    int(r["train_total_samples"]),
+                    -float(r["monitor_tpr"]),
+                    float(r["monitor_fpr"]),
+                ),
+            )
+            reason = "smallest_fpr_safe_near_best_tpr"
+        else:
+            best_tpr = float("nan")
+            selected = min(
+                valid_rows,
+                key=lambda r: (
+                    float(r.get("monitor_fpr", float("inf"))),
+                    -float(r.get("monitor_tpr", float("-inf"))),
+                    int(r["train_total_samples"]),
+                ),
+            )
+            reason = "fallback_lowest_monitor_fpr_no_fpr_safe_candidate"
+
+        for r in candidate_rows:
+            r["best_feasible_monitor_tpr"] = float(best_tpr)
+            monitor_tpr = float(r.get("monitor_tpr", float("nan")))
+            r["tpr_gap_from_best_feasible"] = (
+                float(best_tpr - monitor_tpr)
+                if np.isfinite(best_tpr) and np.isfinite(monitor_tpr)
+                else float("nan")
+            )
+            r["selection_reason"] = reason
+
+        selected_total = int(selected["train_total_samples"])
+        selected["selected"] = True
+        selected_method = candidate_methods.get(selected_total)
+        if selected_method is None:
+            h0_dose, h1_dose = _subset_train_indices_for_dosage(
+                gs.H0_train,
+                gs.H1_train,
+                total_train_samples=selected_total,
+            )
+            fresh = _build_configured_methods(args, X_cos=X_cos, X_text=X_text, quiet=True)
+            selected_method = _fit_one_method_on_global_indices(
+                method_name=method_name,
+                method=fresh[method_name],
+                h0_train_idx=h0_dose,
+                h1_train_idx=h1_dose,
+                h0_calib_idx=gs.H0_calib,
+                h1_calib_idx=gs.H1_calib,
+                X_main=X_main,
+                X_cos=X_cos,
+                X_text=X_text,
+                region_id=region_id,
+                args=args,
+                seed=seed,
+                trial=trial,
+                failures=failures,
+                fit_context="train_dosage_selected",
+            )
+        if selected_method is None:
+            failures[method_name].append(f"trial={trial}: selected train dosage refit failed")
+            continue
+
+        selected_methods[method_name] = selected_method
+        selected_meta[method_name] = {
+            "train_h0_samples": int(selected["train_h0_samples"]),
+            "train_h1_samples": int(selected["train_h1_samples"]),
+            "train_total_samples": int(selected["train_total_samples"]),
+            "train_samples_needed": int(selected["train_total_samples"]),
+            "train_sample_source": "train_dosage_search",
+            "train_dosage_search_active": True,
+            "train_dosage_monitor_tpr": float(selected.get("monitor_tpr", float("nan"))),
+            "train_dosage_monitor_fpr": float(selected.get("monitor_fpr", float("nan"))),
+            "train_dosage_fpr_margin": float(fpr_margin),
+            "train_dosage_fpr_limit": float(fpr_limit),
+            "train_dosage_fpr_feasible": bool(selected.get("fpr_feasible", False)),
+            "train_dosage_tpr_tolerance": float(tol),
+            "train_dosage_best_feasible_monitor_tpr": float(
+                selected.get("best_feasible_monitor_tpr", float("nan"))
+            ),
+            "train_dosage_tpr_gap_from_best_feasible": float(
+                selected.get("tpr_gap_from_best_feasible", float("nan"))
+            ),
+            "train_dosage_max_train": int(max_train_arg) if max_train_arg is not None else None,
+            "train_dosage_no_auto_full": bool(no_auto_full),
+            "train_dosage_selection_reason": reason,
+        }
+        print(f"    {method_name}:")
+        print(
+            "      "
+            f"selected_train={int(selected['train_total_samples'])} "
+            f"h0={int(selected['train_h0_samples'])} "
+            f"h1={int(selected['train_h1_samples'])} "
+            f"monitor_tpr={float(selected.get('monitor_tpr', float('nan'))):.4f} "
+            f"monitor_fpr={float(selected.get('monitor_fpr', float('nan'))):.4f} "
+            f"fpr_limit={fpr_limit:.4f} "
+            f"reason={reason}"
+        )
+
+    return selected_methods, selected_meta, search_rows
+
+
 def _print_matched_comparison(rows: List[Dict[str, Any]]) -> None:
     if not rows:
         return
@@ -601,266 +1244,6 @@ def _print_matched_comparison(rows: List[Dict[str, Any]]) -> None:
             f"{float(r['local_macro_tpr']):.4f}     | {float(r['global_macro_tpr']):.4f}     | "
             f"{int(r['tested_regions'])}"
         )
-
-
-def _sample_monitor_from_global_eval(
-    gs: GlobalSplit,
-    *,
-    n_monitor_h0: int,
-    n_monitor_h1: int,
-    seed: int,
-) -> tuple[GlobalSplit, np.ndarray, np.ndarray, Dict[str, int]]:
-    rng = np.random.default_rng(seed)
-    h0_eval = np.asarray(gs.H0_eval, dtype=np.int64).copy()
-    h1_eval = np.asarray(gs.H1_eval, dtype=np.int64).copy()
-    rng.shuffle(h0_eval)
-    rng.shuffle(h1_eval)
-
-    n0 = int(min(max(n_monitor_h0, 0), h0_eval.size))
-    n1 = int(min(max(n_monitor_h1, 0), h1_eval.size))
-
-    h0_monitor = h0_eval[:n0]
-    h1_monitor = h1_eval[:n1]
-    h0_eval_rem = h0_eval[n0:]
-    h1_eval_rem = h1_eval[n1:]
-
-    gs_out = GlobalSplit(
-        H0_train=gs.H0_train,
-        H1_train=gs.H1_train,
-        H0_calib=gs.H0_calib,
-        H1_calib=gs.H1_calib,
-        H0_eval=h0_eval_rem,
-        H1_eval=h1_eval_rem,
-    )
-    stats = {
-        "monitor_h0": int(h0_monitor.size),
-        "monitor_h1": int(h1_monitor.size),
-        "eval_h0_remaining": int(h0_eval_rem.size),
-        "eval_h1_remaining": int(h1_eval_rem.size),
-    }
-    return gs_out, h0_monitor, h1_monitor, stats
-
-
-def _sample_monitor_from_region_splits(
-    splits: List[Any],
-    *,
-    n_monitor_h0: int,
-    n_monitor_h1: int,
-    min_h0_eval: int,
-    min_h1_eval: int,
-    seed: int,
-) -> tuple[List[Any], np.ndarray, np.ndarray, Dict[str, int]]:
-    rng = np.random.default_rng(seed)
-
-    h0_candidates: List[int] = []
-    h1_candidates: List[int] = []
-    for s in splits:
-        h0_ev = np.asarray(s.H0_eval, dtype=np.int64)
-        h1_ev = np.asarray(s.H1_eval, dtype=np.int64)
-        h0_excess = max(0, int(h0_ev.size) - int(min_h0_eval))
-        h1_excess = max(0, int(h1_ev.size) - int(min_h1_eval))
-        if h0_excess > 0:
-            idx0 = h0_ev.copy()
-            rng.shuffle(idx0)
-            h0_candidates.extend(idx0[:h0_excess].tolist())
-        if h1_excess > 0:
-            idx1 = h1_ev.copy()
-            rng.shuffle(idx1)
-            h1_candidates.extend(idx1[:h1_excess].tolist())
-
-    rng.shuffle(h0_candidates)
-    rng.shuffle(h1_candidates)
-
-    n0 = int(min(max(n_monitor_h0, 0), len(h0_candidates)))
-    n1 = int(min(max(n_monitor_h1, 0), len(h1_candidates)))
-
-    h0_monitor = np.asarray(h0_candidates[:n0], dtype=np.int64)
-    h1_monitor = np.asarray(h1_candidates[:n1], dtype=np.int64)
-
-    h0_monitor_set = set(int(i) for i in h0_monitor.tolist())
-    h1_monitor_set = set(int(i) for i in h1_monitor.tolist())
-
-    splits_out: List[Any] = []
-    for s in splits:
-        h0_ev = np.asarray(s.H0_eval, dtype=np.int64)
-        h1_ev = np.asarray(s.H1_eval, dtype=np.int64)
-        h0_keep = h0_ev[~np.isin(h0_ev, list(h0_monitor_set))]
-        h1_keep = h1_ev[~np.isin(h1_ev, list(h1_monitor_set))]
-        splits_out.append(
-            type(s)(
-                rid=int(s.rid),
-                H0_train=s.H0_train,
-                H1_train=s.H1_train,
-                H0_calib=s.H0_calib,
-                H1_calib=s.H1_calib,
-                H0_eval=h0_keep,
-                H1_eval=h1_keep,
-            )
-        )
-
-    stats = {
-        "monitor_h0": int(h0_monitor.size),
-        "monitor_h1": int(h1_monitor.size),
-        "eval_h0_remaining": int(sum(int(s.H0_eval.size) for s in splits_out)),
-        "eval_h1_remaining": int(sum(int(s.H1_eval.size) for s in splits_out)),
-    }
-    return splits_out, h0_monitor, h1_monitor, stats
-
-
-def _run_online_stopping(
-    X_main: np.ndarray,
-    y: np.ndarray,
-    *,
-    h0_train_idx: np.ndarray,
-    h1_train_idx: np.ndarray,
-    h0_calib_idx: np.ndarray,
-    h0_monitor_idx: np.ndarray,
-    h1_monitor_idx: np.ndarray,
-    alpha: float,
-    tie_mode: str,
-    tau_guardrail: str,
-    tau_guardrail_delta: float,
-    seed: int,
-    args: argparse.Namespace,
-) -> tuple[Optional[OnlineBaseMethod], List[Dict[str, Any]], Dict[str, Any]]:
-    if h0_train_idx.size == 0 or h1_train_idx.size == 0:
-        return None, [], {
-            "stopped": False,
-            "reason": "empty_train",
-        }
-    if h0_calib_idx.size == 0:
-        return None, [], {
-            "stopped": False,
-            "reason": "empty_calib_h0",
-        }
-    if h0_monitor_idx.size == 0 or h1_monitor_idx.size == 0:
-        return None, [], {
-            "stopped": False,
-            "reason": "empty_monitor",
-        }
-
-    rng = np.random.default_rng(seed)
-    h0_idx = np.asarray(h0_train_idx, dtype=np.int64).copy()
-    h1_idx = np.asarray(h1_train_idx, dtype=np.int64).copy()
-    rng.shuffle(h0_idx)
-    rng.shuffle(h1_idx)
-
-    n_init_h0 = int(min(max(args.online_init_h0, 0), h0_idx.size))
-    n_init_h1 = int(min(max(args.online_init_h1, 0), h1_idx.size))
-    if n_init_h0 == 0 or n_init_h1 == 0:
-        return None, [], {
-            "stopped": False,
-            "reason": "empty_init",
-        }
-
-    init_h0_idx = h0_idx[:n_init_h0]
-    init_h1_idx = h1_idx[:n_init_h1]
-    rem_h0_idx = h0_idx[n_init_h0:]
-    rem_h1_idx = h1_idx[n_init_h1:]
-
-    online = OnlineBaseMethod(
-        mem_cap_H0=int(args.online_mem_cap),
-        mem_cap_H1=int(args.online_mem_cap),
-        update_mode=str(args.online_update_mode),
-        update_every=1,
-        hill_lr=float(args.online_hill_lr),
-        seed=seed,
-    )
-    online.initialize(X_main[init_h0_idx], X_main[init_h1_idx])
-
-    check_every = max(1, int(args.stop_check_every))
-    stopper = OnlineStopper(
-        StopConfig(
-            stop_check_every=check_every,
-            stop_window=max(1, int(args.stop_window)),
-            stop_patience=max(1, int(args.stop_patience)),
-            stop_eps_tpr=float(args.stop_eps_tpr),
-            stop_eps_fpr=float(args.stop_eps_fpr),
-            stop_eps_tau=float(args.stop_eps_tau),
-            stop_fpr_margin=float(args.stop_fpr_margin),
-            alpha=float(alpha),
-        )
-    )
-
-    rem_idx = np.concatenate([rem_h0_idx, rem_h1_idx]) if rem_h0_idx.size + rem_h1_idx.size > 0 else np.array([], dtype=np.int64)
-    rng.shuffle(rem_idx)
-
-    history_rows: List[Dict[str, Any]] = []
-    total_updates = 0
-    stopped = False
-    stop_reason = "stream_exhausted"
-    last_tau = float("inf")
-    samples_streamed = 0
-    samples_init = int(init_h0_idx.size + init_h1_idx.size)
-    total_stream_available = int(rem_idx.size)
-
-    def _checkpoint(checkpoint_idx: int) -> bool:
-        nonlocal last_tau
-        sc0_cal = np.asarray(online.score(X_main[h0_calib_idx]), dtype=np.float32).reshape(-1)
-        tau = _select_tau(
-            sc0_cal,
-            alpha=float(alpha),
-            tie_mode=tie_mode,
-            guardrail=tau_guardrail,
-            guardrail_delta=tau_guardrail_delta,
-        )
-        if not np.isfinite(tau):
-            tau = float(np.quantile(sc0_cal, 1.0 - float(alpha)))
-        last_tau = float(tau)
-
-        sc0_mon = np.asarray(online.score(X_main[h0_monitor_idx]), dtype=np.float32).reshape(-1)
-        sc1_mon = np.asarray(online.score(X_main[h1_monitor_idx]), dtype=np.float32).reshape(-1)
-        p0 = apply_threshold(sc0_mon, tau, tie_mode)
-        p1 = apply_threshold(sc1_mon, tau, tie_mode)
-        fpr_monitor = float(np.mean(p0 == 1))
-        tpr_monitor = float(np.mean(p1 == 1))
-
-        entry = stopper.update(checkpoint_idx, tpr_monitor, fpr_monitor, float(tau))
-        history_rows.append(
-            {
-                "checkpoint": int(entry.checkpoint),
-                "tpr_monitor": float(entry.tpr_monitor),
-                "fpr_monitor": float(entry.fpr_monitor),
-                "tau": float(entry.tau),
-                "slope_tpr": float(entry.slope_tpr),
-                "slope_fpr": float(entry.slope_fpr),
-                "slope_tau": float(entry.slope_tau),
-                "condition_passed": bool(entry.condition_passed),
-                "stop_streak": int(entry.stop_streak),
-                "should_stop": bool(entry.should_stop),
-            }
-        )
-        return bool(entry.should_stop)
-
-    if rem_idx.size == 0:
-        stopped = _checkpoint(0)
-        stop_reason = "no_stream_data"
-    else:
-        batch_size = int(max(1, args.online_batch_size))
-        for start in range(0, rem_idx.size, batch_size):
-            end = min(start + batch_size, rem_idx.size)
-            idx = rem_idx[start:end]
-            online.update(X_main[idx], y[idx])
-            total_updates += 1
-            samples_streamed += int(idx.size)
-            if total_updates % check_every == 0 or end == rem_idx.size:
-                if _checkpoint(total_updates):
-                    stopped = True
-                    stop_reason = "stability_reached"
-                    break
-
-    summary = {
-        "stopped": bool(stopped),
-        "reason": str(stop_reason),
-        "updates": int(total_updates),
-        "final_tau": float(last_tau),
-        "history_len": int(len(history_rows)),
-        "samples_init": int(samples_init),
-        "samples_streamed": int(samples_streamed),
-        "samples_total_used": int(samples_init + samples_streamed),
-        "samples_stream_available": int(total_stream_available),
-    }
-    return online, history_rows, summary
 
 
 def _parse_float_csv(raw: Optional[str]) -> List[float]:
@@ -1087,6 +1470,90 @@ def _tiny_mlp_hidden_layers(args: argparse.Namespace) -> tuple[int, ...]:
     return tuple(hidden_dim for _ in range(n_layers))
 
 
+def _tiny_mlp_batch_size(args: argparse.Namespace) -> int | str:
+    batch_size = getattr(args, "tiny_mlp_batch_size", 128)
+    if isinstance(batch_size, str):
+        if batch_size.strip().lower() == "auto":
+            return "auto"
+        batch_size = int(batch_size)
+    return int(max(1, batch_size))
+
+
+def _xgboost_kwargs_from_args(args: argparse.Namespace) -> Dict[str, Any]:
+    mapping = {
+        "xgb_n_estimators": int,
+        "xgb_max_depth": int,
+        "xgb_learning_rate": float,
+        "xgb_subsample": float,
+        "xgb_colsample_bytree": float,
+        "xgb_min_child_weight": float,
+        "xgb_gamma": float,
+        "xgb_reg_alpha": float,
+        "xgb_reg_lambda": float,
+    }
+
+    out: Dict[str, Any] = {}
+    for name, cast in mapping.items():
+        value = getattr(args, name, None)
+        if value is not None:
+            out[name] = cast(value)
+    return out
+
+
+def _whitened_cosine_kwargs_from_args(args: argparse.Namespace) -> Dict[str, Any]:
+    mapping = {
+        "pca_whiten_abs_eps": float,
+        "pca_whiten_rel_eps": float,
+        "pca_whiten_max_rank": int,
+        "pca_whiten_rank_mode": str,
+        "pca_whiten_explained_variance": float,
+        "pca_whiten_norm_eps": float,
+    }
+
+    out: Dict[str, Any] = {}
+    for name, cast in mapping.items():
+        value = getattr(args, name, None)
+        if value is not None:
+            out[name] = cast(value)
+    return out
+
+
+def _tiny_mlp_kwargs_from_args(args: argparse.Namespace) -> Dict[str, Any]:
+    mapping = {
+        "tiny_mlp_activation": str,
+        "tiny_mlp_alpha": float,
+        "tiny_mlp_batch_size": str,
+        "tiny_mlp_early_stopping": bool,
+        "tiny_mlp_hidden_dim": int,
+        "tiny_mlp_learning_rate_init": float,
+        "tiny_mlp_max_iter": int,
+        "tiny_mlp_n_layers": int,
+        "tiny_mlp_validation_fraction": float,
+    }
+
+    out: Dict[str, Any] = {}
+    for name, cast in mapping.items():
+        value = getattr(args, name, None)
+        if value is not None:
+            out[name] = cast(value)
+    return out
+
+
+def _lda_kwargs_from_args(args: argparse.Namespace) -> Dict[str, Any]:
+    mapping = {
+        "lda_solver": str,
+        "lda_shrinkage": str,
+        "lda_tol": float,
+    }
+
+    out: Dict[str, Any] = {}
+    for name, cast in mapping.items():
+        value = getattr(args, name, None)
+        if value is not None:
+            out[name] = cast(value)
+    return out
+
+
 def _ensemble_config_from_args(args: argparse.Namespace) -> Any:
     from np_bench.methods.weighted_ensemble import EnsembleConfig
 
@@ -1113,37 +1580,16 @@ def _build_ensemble_judges(args: argparse.Namespace, *, use_precomputed_cosine: 
     else:
         judges.append(CosineMethod())
 
-    # try:
-    #     from np_bench.methods.whitened_cosine import WhitenedCosineMethod
-    #     judges.append(
-    #         WhitenedCosineMethod(
-    #             abs_eps=float(getattr(args, "pca_whiten_abs_eps", 1e-6)),
-    #             rel_eps=float(getattr(args, "pca_whiten_rel_eps", 1e-6)),
-    #             max_rank=getattr(args, "pca_whiten_max_rank", 128),
-    #             rank_mode=str(getattr(args, "pca_whiten_rank_mode", "explained_variance")),
-    #             explained_variance=float(getattr(args, "pca_whiten_explained_variance", 0.99)),
-    #             norm_eps=float(getattr(args, "pca_whiten_norm_eps", 1e-12)),
-    #         )
-    #     )
-    # except Exception:
-    #     pass
+    try:
+        from np_bench.methods.whitened_cosine import WhitenedCosineMethod
+        judges.append(WhitenedCosineMethod(**_whitened_cosine_kwargs_from_args(args)))
+    except Exception:
+        pass
 
     if has_xgb:
         try:
             from np_bench.methods.xgboost import XGBoostLightMethod
-            judges.append(
-                XGBoostLightMethod(
-                    n_estimators=int(getattr(args, "xgb_n_estimators", 30)),
-                    max_depth=int(getattr(args, "xgb_max_depth", 3)),
-                    learning_rate=float(getattr(args, "xgb_learning_rate", 0.1)),
-                    subsample=float(getattr(args, "xgb_subsample", 1.0)),
-                    colsample_bytree=float(getattr(args, "xgb_colsample_bytree", 1.0)),
-                    min_child_weight=float(getattr(args, "xgb_min_child_weight", 1.0)),
-                    gamma=float(getattr(args, "xgb_gamma", 0.0)),
-                    reg_alpha=float(getattr(args, "xgb_reg_alpha", 0.0)),
-                    reg_lambda=float(getattr(args, "xgb_reg_lambda", 1.0)),
-                )
-            )
+            judges.append(XGBoostLightMethod(**_xgboost_kwargs_from_args(args)))
         except Exception:
             pass
 
@@ -1158,11 +1604,7 @@ def _build_ensemble_judges(args: argparse.Namespace, *, use_precomputed_cosine: 
     #     )
     # )
     judges.append(
-        LDAMethod(
-            solver=str(getattr(args, "lda_solver", "lsqr")),
-            shrinkage=getattr(args, "lda_shrinkage", "auto"),
-            tol=float(getattr(args, "lda_tol", 1e-4)),
-        )
+        LDAMethod(**_lda_kwargs_from_args(args))
     )
     return judges
 
@@ -1191,12 +1633,7 @@ def _build_configured_methods(
     try:
         from np_bench.methods.whitened_cosine import WhitenedCosineMethod
         methods["PCAWhitenedCosine"] = WhitenedCosineMethod(
-            abs_eps=float(getattr(args, "pca_whiten_abs_eps", 1e-6)),
-            rel_eps=float(getattr(args, "pca_whiten_rel_eps", 1e-6)),
-            max_rank=getattr(args, "pca_whiten_max_rank", 128),
-            rank_mode=str(getattr(args, "pca_whiten_rank_mode", "explained_variance")),
-            explained_variance=float(getattr(args, "pca_whiten_explained_variance", 0.99)),
-            norm_eps=float(getattr(args, "pca_whiten_norm_eps", 1e-12)),
+            **_whitened_cosine_kwargs_from_args(args)
         )
     except Exception:
         pass
@@ -1204,42 +1641,21 @@ def _build_configured_methods(
     if has_xgb:
         try:
             from np_bench.methods.xgboost import XGBoostLightMethod
-            methods["XGBoost"] = XGBoostLightMethod(
-                n_estimators=int(getattr(args, "xgb_n_estimators", 30)),
-                max_depth=int(getattr(args, "xgb_max_depth", 3)),
-                learning_rate=float(getattr(args, "xgb_learning_rate", 0.1)),
-                subsample=float(getattr(args, "xgb_subsample", 1.0)),
-                colsample_bytree=float(getattr(args, "xgb_colsample_bytree", 1.0)),
-                min_child_weight=float(getattr(args, "xgb_min_child_weight", 1.0)),
-                gamma=float(getattr(args, "xgb_gamma", 0.0)),
-                reg_alpha=float(getattr(args, "xgb_reg_alpha", 0.0)),
-                reg_lambda=float(getattr(args, "xgb_reg_lambda", 1.0)),
-            )
+            methods["XGBoost"] = XGBoostLightMethod(**_xgboost_kwargs_from_args(args))
         except Exception as exc:
             if not quiet:
                 print(f"[WARN] Could not configure XGBoost: {exc}")
 
     try:
         from np_bench.methods.tiny_mlp import TinyMLPMethod
-        methods["Tiny MLP"] = TinyMLPMethod(
-            hidden_layer_sizes=_tiny_mlp_hidden_layers(args),
-            activation=str(getattr(args, "tiny_mlp_activation", "relu")),
-            alpha=float(getattr(args, "tiny_mlp_alpha", 0.001)),
-            learning_rate_init=float(getattr(args, "tiny_mlp_learning_rate_init", 0.001)),
-            max_iter=int(getattr(args, "tiny_mlp_max_iter", 800)),
-            early_stopping=bool(getattr(args, "tiny_mlp_early_stopping", False)),
-        )
+        methods["Tiny MLP"] = TinyMLPMethod(**_tiny_mlp_kwargs_from_args(args))
     except Exception as exc:
         if not quiet:
             print(f"[WARN] Could not configure Tiny MLP: {exc}")
 
     try:
         from np_bench.methods.lda import LDAMethod
-        methods["LDA"] = LDAMethod(
-            solver=str(getattr(args, "lda_solver", "lsqr")),
-            shrinkage=getattr(args, "lda_shrinkage", "auto"),
-            tol=float(getattr(args, "lda_tol", 1e-4)),
-        )
+        methods["LDA"] = LDAMethod(**_lda_kwargs_from_args(args))
     except Exception as exc:
         if not quiet:
             print(f"[WARN] Could not configure LDA: {exc}")
@@ -1421,8 +1837,9 @@ def _evaluate_global_candidate(
         method_names = list(methods.keys())
 
         online_method = None
+        online_summary: Dict[str, Any] = {}
         if candidate_args.enable_online_stopping:
-            online_method, _, _ = _run_online_stopping(
+            online_method, _, online_summary, used_h0_train_idx, used_h1_train_idx = _run_online_stopping(
                 X_main,
                 y,
                 h0_train_idx=gs.H0_train,
@@ -1437,7 +1854,50 @@ def _evaluate_global_candidate(
                 seed=seed,
                 args=candidate_args,
             )
-            if online_method is not None:
+            if bool(getattr(candidate_args, "early_stop_train_subset", False)):
+                if online_method is None:
+                    return [], {
+                        "reason": f"online_stopping_skipped:{online_summary.get('reason', 'unknown')}"
+                    }
+                _validate_online_used_indices(
+                    y=y,
+                    used_h0_train_idx=used_h0_train_idx,
+                    used_h1_train_idx=used_h1_train_idx,
+                )
+                gs = _replace_global_train_indices(
+                    gs,
+                    used_h0_train_idx=used_h0_train_idx,
+                    used_h1_train_idx=used_h1_train_idx,
+                )
+                h0_train_idx_fit = np.asarray(gs.H0_train, dtype=np.int64).reshape(-1)
+                h1_train_idx_fit = np.asarray(gs.H1_train, dtype=np.int64).reshape(-1)
+                h0_train_idx_unique = np.unique(h0_train_idx_fit) if h0_train_idx_fit.size > 0 else h0_train_idx_fit
+                h1_train_idx_unique = np.unique(h1_train_idx_fit) if h1_train_idx_fit.size > 0 else h1_train_idx_fit
+
+                H0_train = X_main[h0_train_idx_fit]
+                H1_train = X_main[h1_train_idx_fit]
+                H0_calib_eff = X_main[np.concatenate([h0_train_idx_unique, gs.H0_calib])] \
+                    if h0_train_idx_unique.size > 0 else X_main[gs.H0_calib]
+                H1_calib_eff = X_main[np.concatenate([h1_train_idx_unique, gs.H1_calib])] \
+                    if h1_train_idx_unique.size > 0 else X_main[gs.H1_calib]
+                H0_train_cos = X_cos[h0_train_idx_fit] if X_cos is not None else None
+                H1_train_cos = X_cos[h1_train_idx_fit] if X_cos is not None else None
+                if X_cos is not None:
+                    H0_calib_eff_cos = X_cos[np.concatenate([h0_train_idx_unique, gs.H0_calib])] \
+                        if h0_train_idx_unique.size > 0 else X_cos[gs.H0_calib]
+                    H1_calib_eff_cos = X_cos[np.concatenate([h1_train_idx_unique, gs.H1_calib])] \
+                        if h1_train_idx_unique.size > 0 else X_cos[gs.H1_calib]
+                if X_text is not None:
+                    H0_train_text = X_text[h0_train_idx_fit]
+                    H1_train_text = X_text[h1_train_idx_fit]
+                    H0_calib_eff_text = X_text[np.concatenate([h0_train_idx_unique, gs.H0_calib])] \
+                        if h0_train_idx_unique.size > 0 else X_text[gs.H0_calib]
+                    H1_calib_eff_text = X_text[np.concatenate([h1_train_idx_unique, gs.H1_calib])] \
+                        if h1_train_idx_unique.size > 0 else X_text[gs.H1_calib]
+                v0 = np.var(H0_calib_eff, axis=0)
+                v1 = np.var(H1_calib_eff, axis=0)
+                weights = (v1 / (v0 + 1e-12)).astype(np.float32, copy=False)
+            if online_method is not None and _online_stopping_as_method(candidate_args):
                 methods["Online(refit)"] = online_method
                 method_names.append("Online(refit)")
 
@@ -1519,13 +1979,31 @@ def _evaluate_global_candidate(
                     )
                 )
 
+        source = (
+            "early_stop_train_subset"
+            if bool(getattr(candidate_args, "early_stop_train_subset", False))
+            else "full_train_split"
+        )
+        overrides = (
+            {"Online(refit)": _online_method_train_count_meta(online_summary)}
+            if online_method is not None and _online_stopping_as_method(candidate_args)
+            else None
+        )
+        _annotate_train_sample_counts(
+            rows,
+            h0_train_idx=gs.H0_train,
+            h1_train_idx=gs.H1_train,
+            source=source,
+            method_overrides=overrides,
+        )
+
     return rows, {"failures": sum(len(v) for v in failures_local.values())}
 
 
 def _evaluate_local_candidate(
     candidate_args: argparse.Namespace,
     *,
-    splits: List[RegionSplit],
+    splits: List[Any],
     X_main: np.ndarray,
     X_cos: Optional[np.ndarray],
     X_text: Optional[np.ndarray],
@@ -1625,8 +2103,9 @@ def _evaluate_local_candidate(
         method_names = list(methods.keys())
 
         online_method = None
+        online_summary: Dict[str, Any] = {}
         if candidate_args.enable_online_stopping:
-            online_method, _, _ = _run_online_stopping(
+            online_method, _, online_summary, used_h0_train_idx, used_h1_train_idx = _run_online_stopping(
                 X_main,
                 y,
                 h0_train_idx=_concat_indices(h0_train_idx_list),
@@ -1641,7 +2120,54 @@ def _evaluate_local_candidate(
                 seed=seed,
                 args=candidate_args,
             )
-            if online_method is not None:
+            if bool(getattr(candidate_args, "early_stop_train_subset", False)):
+                if online_method is None:
+                    return [], {
+                        "reason": f"online_stopping_skipped:{online_summary.get('reason', 'unknown')}"
+                    }
+                _validate_online_used_indices(
+                    y=y,
+                    used_h0_train_idx=used_h0_train_idx,
+                    used_h1_train_idx=used_h1_train_idx,
+                )
+                splits = _replace_region_train_indices(
+                    splits,
+                    used_h0_train_idx=used_h0_train_idx,
+                    used_h1_train_idx=used_h1_train_idx,
+                    region_id=region_id,
+                )
+                h0_train_idx_list = [s.H0_train for s in splits if s.H0_train.size > 0]
+                h1_train_idx_list = [s.H1_train for s in splits if s.H1_train.size > 0]
+                h0_train_idx_fit = _concat_indices(h0_train_idx_list)
+                h1_train_idx_fit = _concat_indices(h1_train_idx_list)
+                h0_train_idx_unique = np.unique(h0_train_idx_fit) if h0_train_idx_fit.size > 0 else h0_train_idx_fit
+                h1_train_idx_unique = np.unique(h1_train_idx_fit) if h1_train_idx_fit.size > 0 else h1_train_idx_fit
+
+                H0_train = X_main[h0_train_idx_fit] if h0_train_idx_fit.size > 0 else X_main[:0]
+                H1_train = X_main[h1_train_idx_fit] if h1_train_idx_fit.size > 0 else X_main[:0]
+                H0_calib_eff = X_main[np.concatenate([h0_train_idx_unique, h0_calib_idx])] \
+                    if h0_train_idx_unique.size > 0 else H0_calib
+                H1_calib_eff = X_main[np.concatenate([h1_train_idx_unique, h1_calib_idx])] \
+                    if h1_train_idx_unique.size > 0 else H1_calib
+
+                if X_cos is not None:
+                    H0_train_cos = X_cos[h0_train_idx_fit] if h0_train_idx_fit.size > 0 else X_cos[:0]
+                    H1_train_cos = X_cos[h1_train_idx_fit] if h1_train_idx_fit.size > 0 else X_cos[:0]
+                    H0_calib_eff_cos = X_cos[np.concatenate([h0_train_idx_unique, h0_calib_idx])] \
+                        if h0_train_idx_unique.size > 0 else H0_calib_cos
+                    H1_calib_eff_cos = X_cos[np.concatenate([h1_train_idx_unique, h1_calib_idx])] \
+                        if h1_train_idx_unique.size > 0 else H1_calib_cos
+                if X_text is not None:
+                    H0_train_text = X_text[h0_train_idx_fit] if h0_train_idx_fit.size > 0 else X_text[:0]
+                    H1_train_text = X_text[h1_train_idx_fit] if h1_train_idx_fit.size > 0 else X_text[:0]
+                    H0_calib_eff_text = X_text[np.concatenate([h0_train_idx_unique, h0_calib_idx])] \
+                        if h0_train_idx_unique.size > 0 else H0_calib_text
+                    H1_calib_eff_text = X_text[np.concatenate([h1_train_idx_unique, h1_calib_idx])] \
+                        if h1_train_idx_unique.size > 0 else H1_calib_text
+                v0 = np.var(H0_calib_eff, axis=0)
+                v1 = np.var(H1_calib_eff, axis=0)
+                weights = (v1 / (v0 + 1e-12)).astype(np.float32, copy=False)
+            if online_method is not None and _online_stopping_as_method(candidate_args):
                 methods["Online(refit)"] = online_method
                 method_names.append("Online(refit)")
 
@@ -1752,6 +2278,24 @@ def _evaluate_local_candidate(
                             alpha=float(candidate_args.alpha),
                         )
                     )
+
+        source = (
+            "early_stop_train_subset"
+            if bool(getattr(candidate_args, "early_stop_train_subset", False))
+            else "local_train_split"
+        )
+        overrides = (
+            {"Online(refit)": _online_method_train_count_meta(online_summary)}
+            if online_method is not None and _online_stopping_as_method(candidate_args)
+            else None
+        )
+        _annotate_train_sample_counts(
+            rows,
+            h0_train_idx=_concat_indices(h0_train_idx_list),
+            h1_train_idx=_concat_indices(h1_train_idx_list),
+            source=source,
+            method_overrides=overrides,
+        )
 
     return rows, {"failures": sum(len(v) for v in failures_local.values())}
 
@@ -1917,40 +2461,48 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help="Optional NPZ key for raw y embeddings used in train cosine policy.",
     )
 
-    # Static scorer hyperparameters. Defaults preserve the previous hard-coded behavior.
-    ap.add_argument("--pca_whiten_abs_eps", type=float, default=1e-6)
-    ap.add_argument("--pca_whiten_rel_eps", type=float, default=1e-6)
-    ap.add_argument("--pca_whiten_max_rank", type=int, default=128)
+    # Static scorer hyperparameters. None means use each method class default.
+    ap.add_argument("--pca_whiten_abs_eps", type=float, default=None)
+    ap.add_argument("--pca_whiten_rel_eps", type=float, default=None)
+    ap.add_argument("--pca_whiten_max_rank", type=int, default=None)
     ap.add_argument(
         "--pca_whiten_rank_mode",
         type=str,
-        default="explained_variance",
+        default=None,
         choices=["fixed", "explained_variance", "threshold"],
     )
-    ap.add_argument("--pca_whiten_explained_variance", type=float, default=0.99)
-    ap.add_argument("--pca_whiten_norm_eps", type=float, default=1e-12)
+    ap.add_argument("--pca_whiten_explained_variance", type=float, default=None)
+    ap.add_argument("--pca_whiten_norm_eps", type=float, default=None)
 
-    ap.add_argument("--xgb_n_estimators", type=int, default=30)
-    ap.add_argument("--xgb_max_depth", type=int, default=3)
-    ap.add_argument("--xgb_learning_rate", type=float, default=0.1)
-    ap.add_argument("--xgb_subsample", type=float, default=1.0)
-    ap.add_argument("--xgb_colsample_bytree", type=float, default=1.0)
-    ap.add_argument("--xgb_min_child_weight", type=float, default=1.0)
-    ap.add_argument("--xgb_gamma", type=float, default=0.0)
-    ap.add_argument("--xgb_reg_alpha", type=float, default=0.0)
-    ap.add_argument("--xgb_reg_lambda", type=float, default=1.0)
+    ap.add_argument("--xgb_n_estimators", type=int, default=None)
+    ap.add_argument("--xgb_max_depth", type=int, default=None)
+    ap.add_argument("--xgb_learning_rate", type=float, default=None)
+    ap.add_argument("--xgb_subsample", type=float, default=None)
+    ap.add_argument("--xgb_colsample_bytree", type=float, default=None)
+    ap.add_argument("--xgb_min_child_weight", type=float, default=None)
+    ap.add_argument("--xgb_gamma", type=float, default=None)
+    ap.add_argument("--xgb_reg_alpha", type=float, default=None)
+    ap.add_argument("--xgb_reg_lambda", type=float, default=None)
 
-    ap.add_argument("--tiny_mlp_hidden_dim", type=int, default=16)
-    ap.add_argument("--tiny_mlp_n_layers", type=int, default=1)
-    ap.add_argument("--tiny_mlp_alpha", type=float, default=0.001)
-    ap.add_argument("--tiny_mlp_learning_rate_init", type=float, default=0.001)
-    ap.add_argument("--tiny_mlp_max_iter", type=int, default=800)
-    ap.add_argument("--tiny_mlp_activation", type=str, default="relu", choices=["relu", "tanh", "logistic"])
-    ap.add_argument("--tiny_mlp_early_stopping", action="store_true", default=False)
+    ap.add_argument("--tiny_mlp_hidden_dim", type=int, default=None)
+    ap.add_argument("--tiny_mlp_n_layers", type=int, default=None)
+    ap.add_argument("--tiny_mlp_alpha", type=float, default=None)
+    ap.add_argument("--tiny_mlp_learning_rate_init", type=float, default=None)
+    ap.add_argument("--tiny_mlp_max_iter", type=int, default=None)
+    ap.add_argument("--tiny_mlp_batch_size", type=str, default=None)
+    ap.add_argument(
+        "--tiny_mlp_activation",
+        type=str,
+        default=None,
+        choices=["identity", "relu", "tanh", "logistic"],
+    )
+    ap.add_argument("--tiny_mlp_early_stopping", dest="tiny_mlp_early_stopping", action="store_true", default=None)
+    ap.add_argument("--no_tiny_mlp_early_stopping", dest="tiny_mlp_early_stopping", action="store_false")
+    ap.add_argument("--tiny_mlp_validation_fraction", type=float, default=None)
 
-    ap.add_argument("--lda_solver", type=str, default="lsqr", choices=["svd", "lsqr", "eigen"])
-    ap.add_argument("--lda_shrinkage", type=str, default="auto")
-    ap.add_argument("--lda_tol", type=float, default=1e-4)
+    ap.add_argument("--lda_solver", type=str, default=None, choices=["svd", "lsqr", "eigen"])
+    ap.add_argument("--lda_shrinkage", type=str, default=None)
+    ap.add_argument("--lda_tol", type=float, default=None)
 
     ap.add_argument("--ensemble_ridge", type=float, default=1e-3)
     ap.add_argument("--ensemble_standardize", action="store_true", default=False)
@@ -2107,6 +2659,21 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
     # Online stopping controls
     ap.add_argument("--enable_online_stopping", action="store_true", default=False)
+    ap.add_argument(
+        "--early_stop_train_subset",
+        action="store_true",
+        default=False,
+        help="Use online stopping as a train-subset selector for all methods instead of training them on the full train split.",
+    )
+    ap.add_argument(
+        "--online_stopping_as_method",
+        action="store_true",
+        default=None,
+        help=(
+            "Also add Online(refit) as a method row. If omitted, legacy mode adds it when "
+            "--enable_online_stopping is set; --early_stop_train_subset suppresses it unless this flag is set."
+        ),
+    )
     ap.add_argument("--stop_check_every", type=int, default=5)
     ap.add_argument("--stop_window", type=int, default=5)
     ap.add_argument("--stop_patience", type=int, default=3)
@@ -2120,10 +2687,58 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     # Online update controls (used only when stopping is enabled)
     ap.add_argument("--online_batch_size", type=int, default=64)
     ap.add_argument("--online_mem_cap", type=int, default=2000)
-    ap.add_argument("--online_update_mode", type=str, default="refit", choices=["refit", "hill_climb"])
+    ap.add_argument("--online_update_mode", type=str, default="refit", choices=["refit", "hill_climb", "reservoir"])
     ap.add_argument("--online_hill_lr", type=float, default=0.1)
     ap.add_argument("--online_init_h0", type=int, default=50)
     ap.add_argument("--online_init_h1", type=int, default=50)
+
+    # Per-method train dosage search (validation on held-out monitor split)
+    ap.add_argument(
+        "--enable_train_dosage_search",
+        action="store_true",
+        default=False,
+        help=(
+            "For tau_mode=global, search a per-method train sample count using the monitor split, "
+            "then fit/evaluate each method at its selected dosage."
+        ),
+    )
+    ap.add_argument(
+        "--train_dosage_grid",
+        type=str,
+        default="",
+        help=(
+            "Comma-separated total train sample counts to try per method. "
+            "The full available train size is included unless --train_dosage_no_auto_full is set; "
+            "if empty, uses a doubling grid."
+        ),
+    )
+    ap.add_argument(
+        "--train_dosage_no_auto_full",
+        action="store_true",
+        default=False,
+        help="Do not automatically append the full available train size to --train_dosage_grid.",
+    )
+    ap.add_argument(
+        "--train_dosage_max_train",
+        type=int,
+        default=None,
+        help="Optional hard cap on train dosage candidates; candidates above this total are removed.",
+    )
+    ap.add_argument(
+        "--train_dosage_tpr_tolerance",
+        type=float,
+        default=0.01,
+        help=(
+            "Select the smallest feasible dosage whose monitor TPR is within this absolute tolerance "
+            "of the best feasible monitor TPR."
+        ),
+    )
+    ap.add_argument(
+        "--train_dosage_fpr_margin",
+        type=float,
+        default=0.0,
+        help="Require monitor_fpr <= alpha - margin for train dosage FPR feasibility.",
+    )
 
     # Optuna validation-only hyperparameter search.
     ap.add_argument("--enable_optuna", action="store_true", default=False)
@@ -2152,12 +2767,19 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default=True,
         help="Apply the best validation params before final test evaluation.",
     )
+    ap.add_argument(
+        "--debug_ablation_scores",
+        action="store_true",
+        default=False,
+        help="Print ablation score diagnostics and pairwise score comparisons.",
+    )
 
     return ap.parse_args(argv)
 
 
 def main(argv: Optional[List[str]] = None) -> None:
     args = parse_args(argv)
+    evaluation_mod.DEBUG_ABLATION_SCORES = bool(args.debug_ablation_scores)
 
     train_cosine_band_active = args.train_cosine_min is not None or args.train_cosine_max is not None
     train_cosine_policy_active = bool(args.train_hardness_weighting or train_cosine_band_active)
@@ -2177,6 +2799,22 @@ def main(argv: Optional[List[str]] = None) -> None:
         raise ValueError("--train_cosine_min must lie in [-1, 1]")
     if args.train_cosine_max is not None and not (-1.0 <= float(args.train_cosine_max) <= 1.0):
         raise ValueError("--train_cosine_max must lie in [-1, 1]")
+    if args.early_stop_train_subset and not args.enable_online_stopping:
+        raise ValueError("--early_stop_train_subset requires --enable_online_stopping")
+    if args.online_stopping_as_method and not args.enable_online_stopping:
+        raise ValueError("--online_stopping_as_method requires --enable_online_stopping")
+    if args.enable_train_dosage_search and args.tau_mode != "global":
+        raise ValueError("--enable_train_dosage_search currently supports --tau_mode global")
+    if args.train_dosage_tpr_tolerance < 0.0:
+        raise ValueError("--train_dosage_tpr_tolerance must be >= 0")
+    if args.train_dosage_fpr_margin < 0.0:
+        raise ValueError("--train_dosage_fpr_margin must be >= 0")
+    if args.train_dosage_max_train is not None and int(args.train_dosage_max_train) <= 1:
+        raise ValueError("--train_dosage_max_train must be > 1 when provided")
+    if args.enable_train_dosage_search:
+        for n in _parse_int_csv(args.train_dosage_grid):
+            if n <= 1:
+                raise ValueError("--train_dosage_grid values must be > 1 total samples")
     if train_cosine_band_active:
         cmin = -1.0 if args.train_cosine_min is None else float(args.train_cosine_min)
         cmax = 1.0 if args.train_cosine_max is None else float(args.train_cosine_max)
@@ -2416,6 +3054,21 @@ def main(argv: Optional[List[str]] = None) -> None:
             f"eps_fpr={args.stop_eps_fpr} eps_tau={args.stop_eps_tau} "
             f"fpr_margin={args.stop_fpr_margin} monitor(h0={args.n_monitor_h0}, h1={args.n_monitor_h1})"
         )
+        print(
+            "online_stopping_policy: "
+            f"early_stop_train_subset={bool(args.early_stop_train_subset)} "
+            f"online_stopping_as_method={bool(_online_stopping_as_method(args))}"
+        )
+    if args.enable_train_dosage_search:
+        print(
+            "train_dosage_search: "
+            f"grid={_parse_int_csv(args.train_dosage_grid) or 'auto'} "
+            f"no_auto_full={bool(args.train_dosage_no_auto_full)} "
+            f"max_train={args.train_dosage_max_train if args.train_dosage_max_train is not None else 'none'} "
+            f"monitor(h0={args.n_monitor_h0}, h1={args.n_monitor_h1}) "
+            f"tpr_tolerance={float(args.train_dosage_tpr_tolerance):.4f} "
+            f"fpr_margin={float(args.train_dosage_fpr_margin):.4f}"
+        )
     if run_ocats_baselines:
         print(
             "ocats_baselines: "
@@ -2449,6 +3102,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     ocats_trial_rows: List[Dict[str, Any]] = []
     ocats_tuning_rows: List[Dict[str, Any]] = []
     ocats_curve_rows: List[Dict[str, Any]] = []
+    train_dosage_search_rows: List[Dict[str, Any]] = []
     optuna_trial_rows: List[Dict[str, Any]] = []
     optuna_candidate_rows: List[Dict[str, Any]] = []
     optuna_best_rows: List[Dict[str, Any]] = []
@@ -2485,7 +3139,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             h0_monitor_idx = np.array([], dtype=np.int64)
             h1_monitor_idx = np.array([], dtype=np.int64)
             monitor_stats: Dict[str, int] = {}
-            if args.enable_online_stopping:
+            if args.enable_online_stopping or args.enable_train_dosage_search:
                 gs, h0_monitor_idx, h1_monitor_idx, monitor_stats = _sample_monitor_from_global_eval(
                     gs,
                     n_monitor_h0=args.n_monitor_h0,
@@ -2673,6 +3327,90 @@ def main(argv: Optional[List[str]] = None) -> None:
                 _log_train_cosine_policy_stats(train_cos_stats_global)
             print(f"  regions (for macro stats only): {n_unique_regions}")
 
+            online_method = None
+            online_history_rows: List[Dict[str, Any]] = []
+            online_summary: Dict[str, Any] = {}
+            early_stop_train_subset_applied = False
+            online_as_method = _online_stopping_as_method(args)
+            if args.enable_online_stopping:
+                (
+                    online_method,
+                    online_history_rows,
+                    online_summary,
+                    used_h0_train_idx,
+                    used_h1_train_idx,
+                ) = _run_online_stopping(
+                    X_main,
+                    y,
+                    h0_train_idx=gs.H0_train,
+                    h1_train_idx=gs.H1_train,
+                    h0_calib_idx=gs.H0_calib,
+                    h0_monitor_idx=h0_monitor_idx,
+                    h1_monitor_idx=h1_monitor_idx,
+                    alpha=args.alpha,
+                    tie_mode=args.tie_mode,
+                    tau_guardrail=args.tau_guardrail,
+                    tau_guardrail_delta=args.tau_guardrail_delta,
+                    seed=seed,
+                    args=args,
+                )
+                if args.early_stop_train_subset:
+                    if online_method is None:
+                        raise RuntimeError(
+                            "early_stop_train_subset requested but online stopping did not run: "
+                            f"reason={online_summary.get('reason', 'unknown')}"
+                        )
+                    _validate_online_used_indices(
+                        y=y,
+                        used_h0_train_idx=used_h0_train_idx,
+                        used_h1_train_idx=used_h1_train_idx,
+                    )
+                    gs = _replace_global_train_indices(
+                        gs,
+                        used_h0_train_idx=used_h0_train_idx,
+                        used_h1_train_idx=used_h1_train_idx,
+                    )
+                    early_stop_train_subset_applied = True
+
+                    h0_train_idx_fit = np.asarray(gs.H0_train, dtype=np.int64).reshape(-1)
+                    h1_train_idx_fit = np.asarray(gs.H1_train, dtype=np.int64).reshape(-1)
+                    h0_train_idx_unique = np.unique(h0_train_idx_fit) if h0_train_idx_fit.size > 0 else h0_train_idx_fit
+                    h1_train_idx_unique = np.unique(h1_train_idx_fit) if h1_train_idx_fit.size > 0 else h1_train_idx_fit
+
+                    H0_train = X_main[h0_train_idx_fit]
+                    H1_train = X_main[h1_train_idx_fit]
+                    H0_calib_eff = X_main[np.concatenate([h0_train_idx_unique, gs.H0_calib])] \
+                        if h0_train_idx_unique.size > 0 else X_main[gs.H0_calib]
+                    H1_calib_eff = X_main[np.concatenate([h1_train_idx_unique, gs.H1_calib])] \
+                        if h1_train_idx_unique.size > 0 else X_main[gs.H1_calib]
+
+                    H0_train_cos = X_cos[h0_train_idx_fit] if X_cos is not None else None
+                    H1_train_cos = X_cos[h1_train_idx_fit] if X_cos is not None else None
+                    if X_cos is not None:
+                        H0_calib_eff_cos = X_cos[np.concatenate([h0_train_idx_unique, gs.H0_calib])] \
+                            if h0_train_idx_unique.size > 0 else X_cos[gs.H0_calib]
+                        H1_calib_eff_cos = X_cos[np.concatenate([h1_train_idx_unique, gs.H1_calib])] \
+                            if h1_train_idx_unique.size > 0 else X_cos[gs.H1_calib]
+                    if X_text is not None:
+                        H0_train_text = X_text[h0_train_idx_fit]
+                        H1_train_text = X_text[h1_train_idx_fit]
+                        H0_calib_eff_text = X_text[np.concatenate([h0_train_idx_unique, gs.H0_calib])] \
+                            if h0_train_idx_unique.size > 0 else X_text[gs.H0_calib]
+                        H1_calib_eff_text = X_text[np.concatenate([h1_train_idx_unique, gs.H1_calib])] \
+                            if h1_train_idx_unique.size > 0 else X_text[gs.H1_calib]
+
+                online_summary = _record_online_stopping_outputs(
+                    trial=trial,
+                    seed=seed,
+                    history_rows=online_history_rows,
+                    summary=online_summary,
+                    early_stop_train_subset_active=bool(args.early_stop_train_subset),
+                    early_stop_train_subset_applied=bool(early_stop_train_subset_applied),
+                    online_stopping_as_method=bool(online_as_method),
+                    online_stopping_history_rows=online_stopping_history_rows,
+                    online_stopping_summary_rows=online_stopping_summary_rows,
+                )
+
             if H0_calib_eff.shape[0] == 0 or H1_calib_eff.shape[0] == 0:
                 raise RuntimeError("No data available for fitting/calibration.")
 
@@ -2711,6 +3449,12 @@ def main(argv: Optional[List[str]] = None) -> None:
                     )
                     if include_ocats_in_comparison
                     else []
+                )
+                _annotate_train_sample_counts(
+                    trial_rows,
+                    h0_train_idx=gs.H0_train,
+                    h1_train_idx=gs.H1_train,
+                    source="early_stop_train_subset" if early_stop_train_subset_applied else "global_split",
                 )
                 trial_summary_rows.extend(trial_rows)
                 print_trial_table(trial_rows, alpha=float(args.alpha))
@@ -2813,96 +3557,62 @@ def main(argv: Optional[List[str]] = None) -> None:
             method_names = list(methods.keys())
             configured_methods_last = method_names[:]
 
-            online_method = None
-            online_history_rows: List[Dict[str, Any]] = []
-            online_summary: Dict[str, Any] = {}
-            if args.enable_online_stopping:
-                online_method, online_history_rows, online_summary = _run_online_stopping(
-                    X_main,
-                    y,
-                    h0_train_idx=gs.H0_train,
-                    h1_train_idx=gs.H1_train,
-                    h0_calib_idx=gs.H0_calib,
+            train_dosage_method_overrides: Dict[str, Dict[str, Any]] = {}
+            if args.enable_train_dosage_search:
+                methods, train_dosage_method_overrides, dosage_rows_trial = _run_global_train_dosage_search(
+                    method_names=method_names,
+                    gs=gs,
                     h0_monitor_idx=h0_monitor_idx,
                     h1_monitor_idx=h1_monitor_idx,
-                    alpha=args.alpha,
+                    X_main=X_main,
+                    X_cos=X_cos,
+                    X_text=X_text,
+                    region_id=region_id,
+                    args=args,
+                    seed=seed,
+                    trial=trial,
+                    failures=failures,
+                )
+                train_dosage_search_rows.extend(dosage_rows_trial)
+                method_names = [m for m in method_names if m in methods]
+                configured_methods_last = method_names[:]
+            else:
+                fit_all_methods(
+                    methods,
+                    H0_train=H0_train,
+                    H1_train=H1_train,
+                    H0_calib_eff=H0_calib_eff,
+                    H1_calib_eff=H1_calib_eff,
+                    H0_calib_pure=H0_calib_pure,
+                    H1_calib_pure=H1_calib_pure,
+                    H0_train_cos=H0_train_cos,
+                    H1_train_cos=H1_train_cos,
+                    H0_calib_eff_cos=H0_calib_eff_cos,
+                    H1_calib_eff_cos=H1_calib_eff_cos,
+                    H0_train_text=H0_train_text,
+                    H1_train_text=H1_train_text,
+                    H0_calib_eff_text=H0_calib_eff_text,
+                    H1_calib_eff_text=H1_calib_eff_text,
+                    H0_calib_pure_cos=H0_calib_pure_cos,
+                    H1_calib_pure_cos=H1_calib_pure_cos,
+                    H0_calib_region_ids=region_id[gs.H0_calib],
+                    H1_calib_region_ids=region_id[gs.H1_calib],
                     tie_mode=args.tie_mode,
                     tau_guardrail=args.tau_guardrail,
                     tau_guardrail_delta=args.tau_guardrail_delta,
+                    weights=weights,
                     seed=seed,
-                    args=args,
+                    alpha=args.alpha,
+                    trial=trial,
+                    failures=failures,
+                    fit_context="global",
                 )
 
-            fit_all_methods(
-                methods,
-                H0_train=H0_train,
-                H1_train=H1_train,
-                H0_calib_eff=H0_calib_eff,
-                H1_calib_eff=H1_calib_eff,
-                H0_calib_pure=H0_calib_pure,
-                H1_calib_pure=H1_calib_pure,
-                H0_train_cos=H0_train_cos,
-                H1_train_cos=H1_train_cos,
-                H0_calib_eff_cos=H0_calib_eff_cos,
-                H1_calib_eff_cos=H1_calib_eff_cos,
-                H0_train_text=H0_train_text,
-                H1_train_text=H1_train_text,
-                H0_calib_eff_text=H0_calib_eff_text,
-                H1_calib_eff_text=H1_calib_eff_text,
-                H0_calib_pure_cos=H0_calib_pure_cos,
-                H1_calib_pure_cos=H1_calib_pure_cos,
-                H0_calib_region_ids=region_id[gs.H0_calib],
-                H1_calib_region_ids=region_id[gs.H1_calib],
-                tie_mode=args.tie_mode,
-                tau_guardrail=args.tau_guardrail,
-                tau_guardrail_delta=args.tau_guardrail_delta,
-                weights=weights,
-                seed=seed,
-                alpha=args.alpha,
-                trial=trial,
-                failures=failures,
-                fit_context="global",
-            )
-
-            if args.enable_online_stopping:
+            if args.enable_online_stopping and online_as_method:
                 if online_method is not None:
                     methods["Online(refit)"] = online_method
                     method_names.append("Online(refit)")
                     configured_methods_last = method_names[:]
-                    for r in online_history_rows:
-                        r["trial"] = int(trial)
-                        r["seed"] = int(seed)
-                    online_stopping_history_rows.extend(online_history_rows)
-                    online_stopping_summary_rows.append(
-                        {
-                            "trial": int(trial),
-                            "seed": int(seed),
-                            **online_summary,
-                        }
-                    )
-                    if online_history_rows:
-                        last = online_history_rows[-1]
-                        print(
-                            "  online_stopping: "
-                            f"checks={online_summary.get('history_len', 0)} "
-                            f"stopped={online_summary.get('stopped')} reason={online_summary.get('reason')} "
-                            f"tpr={float(last.get('tpr_monitor', float('nan'))):.4f} "
-                            f"fpr={float(last.get('fpr_monitor', float('nan'))):.4f} "
-                            f"tau={float(last.get('tau', float('nan'))):.4f} "
-                            f"samples_used={online_summary.get('samples_total_used', 0)}"
-                        )
-                else:
-                    online_stopping_summary_rows.append(
-                        {
-                            "trial": int(trial),
-                            "seed": int(seed),
-                            **online_summary,
-                        }
-                    )
-                    print(
-                        "  [WARN] online_stopping skipped: "
-                        f"reason={online_summary.get('reason', 'unknown')}"
-                    )
 
             if "BGE Reranker" in methods:
                 bge_m = methods["BGE Reranker"]
@@ -2979,6 +3689,18 @@ def main(argv: Optional[List[str]] = None) -> None:
                                 alpha=float(args.alpha),
                             )
                         )
+
+            train_sample_source = "early_stop_train_subset" if early_stop_train_subset_applied else "full_train_split"
+            method_overrides = dict(train_dosage_method_overrides)
+            if args.enable_online_stopping and online_as_method and online_method is not None:
+                method_overrides["Online(refit)"] = _online_method_train_count_meta(online_summary)
+            _annotate_train_sample_counts(
+                trial_rows,
+                h0_train_idx=gs.H0_train,
+                h1_train_idx=gs.H1_train,
+                source=train_sample_source,
+                method_overrides=method_overrides or None,
+            )
 
         else:
             # ── LOCAL: per-region splits with min gating (unchanged) ──
@@ -3242,6 +3964,93 @@ def main(argv: Optional[List[str]] = None) -> None:
                     f"eval_remaining(n0={monitor_stats['eval_h0_remaining']}, n1={monitor_stats['eval_h1_remaining']})"
                 )
 
+            online_method = None
+            online_history_rows: List[Dict[str, Any]] = []
+            online_summary: Dict[str, Any] = {}
+            early_stop_train_subset_applied = False
+            online_as_method = _online_stopping_as_method(args)
+            if args.enable_online_stopping:
+                (
+                    online_method,
+                    online_history_rows,
+                    online_summary,
+                    used_h0_train_idx,
+                    used_h1_train_idx,
+                ) = _run_online_stopping(
+                    X_main,
+                    y,
+                    h0_train_idx=_concat_indices(h0_train_idx_list),
+                    h1_train_idx=_concat_indices(h1_train_idx_list),
+                    h0_calib_idx=_concat_indices(h0_calib_list),
+                    h0_monitor_idx=h0_monitor_idx,
+                    h1_monitor_idx=h1_monitor_idx,
+                    alpha=args.alpha,
+                    tie_mode=args.tie_mode,
+                    tau_guardrail=args.tau_guardrail,
+                    tau_guardrail_delta=args.tau_guardrail_delta,
+                    seed=seed,
+                    args=args,
+                )
+                if args.early_stop_train_subset:
+                    if online_method is None:
+                        raise RuntimeError(
+                            "early_stop_train_subset requested but online stopping did not run: "
+                            f"reason={online_summary.get('reason', 'unknown')}"
+                        )
+                    _validate_online_used_indices(
+                        y=y,
+                        used_h0_train_idx=used_h0_train_idx,
+                        used_h1_train_idx=used_h1_train_idx,
+                    )
+                    splits = _replace_region_train_indices(
+                        splits,
+                        used_h0_train_idx=used_h0_train_idx,
+                        used_h1_train_idx=used_h1_train_idx,
+                        region_id=region_id,
+                    )
+                    early_stop_train_subset_applied = True
+
+                    h0_train_idx_list = [s.H0_train for s in splits if s.H0_train.size > 0]
+                    h1_train_idx_list = [s.H1_train for s in splits if s.H1_train.size > 0]
+                    h0_train_idx_fit = _concat_indices(h0_train_idx_list)
+                    h1_train_idx_fit = _concat_indices(h1_train_idx_list)
+                    h0_train_idx_unique = np.unique(h0_train_idx_fit) if h0_train_idx_fit.size > 0 else h0_train_idx_fit
+                    h1_train_idx_unique = np.unique(h1_train_idx_fit) if h1_train_idx_fit.size > 0 else h1_train_idx_fit
+
+                    H0_train = X_main[h0_train_idx_fit] if h0_train_idx_fit.size > 0 else X_main[:0]
+                    H1_train = X_main[h1_train_idx_fit] if h1_train_idx_fit.size > 0 else X_main[:0]
+                    H0_calib_eff = X_main[np.concatenate([h0_train_idx_unique, h0_calib_idx])] \
+                        if h0_train_idx_unique.size > 0 else H0_calib
+                    H1_calib_eff = X_main[np.concatenate([h1_train_idx_unique, h1_calib_idx])] \
+                        if h1_train_idx_unique.size > 0 else H1_calib
+
+                    if X_cos is not None:
+                        H0_train_cos = X_cos[h0_train_idx_fit] if h0_train_idx_fit.size > 0 else X_cos[:0]
+                        H1_train_cos = X_cos[h1_train_idx_fit] if h1_train_idx_fit.size > 0 else X_cos[:0]
+                        H0_calib_eff_cos = X_cos[np.concatenate([h0_train_idx_unique, h0_calib_idx])] \
+                            if h0_train_idx_unique.size > 0 else H0_calib_cos
+                        H1_calib_eff_cos = X_cos[np.concatenate([h1_train_idx_unique, h1_calib_idx])] \
+                            if h1_train_idx_unique.size > 0 else H1_calib_cos
+                    if X_text is not None:
+                        H0_train_text = X_text[h0_train_idx_fit] if h0_train_idx_fit.size > 0 else X_text[:0]
+                        H1_train_text = X_text[h1_train_idx_fit] if h1_train_idx_fit.size > 0 else X_text[:0]
+                        H0_calib_eff_text = X_text[np.concatenate([h0_train_idx_unique, h0_calib_idx])] \
+                            if h0_train_idx_unique.size > 0 else H0_calib_text
+                        H1_calib_eff_text = X_text[np.concatenate([h1_train_idx_unique, h1_calib_idx])] \
+                            if h1_train_idx_unique.size > 0 else H1_calib_text
+
+                online_summary = _record_online_stopping_outputs(
+                    trial=trial,
+                    seed=seed,
+                    history_rows=online_history_rows,
+                    summary=online_summary,
+                    early_stop_train_subset_active=bool(args.early_stop_train_subset),
+                    early_stop_train_subset_applied=bool(early_stop_train_subset_applied),
+                    online_stopping_as_method=bool(online_as_method),
+                    online_stopping_history_rows=online_stopping_history_rows,
+                    online_stopping_summary_rows=online_stopping_summary_rows,
+                )
+
             if H0_calib_eff.shape[0] == 0 or H1_calib_eff.shape[0] == 0:
                 raise RuntimeError("No data available for fitting/calibration.")
 
@@ -3298,6 +4107,16 @@ def main(argv: Optional[List[str]] = None) -> None:
                     )
                     trial_rows = []
 
+                _annotate_train_sample_counts(
+                    trial_rows,
+                    h0_train_idx=gs_ocats.H0_train,
+                    h1_train_idx=gs_ocats.H1_train,
+                    source=(
+                        "early_stop_train_subset"
+                        if early_stop_train_subset_applied
+                        else "local_eligible_regions_train_split"
+                    ),
+                )
                 trial_summary_rows.extend(trial_rows)
                 if trial_rows and args.tau_mode != "global":
                     shared_counts = {int(r.get("shared_regions", r.get("ok_regions", 0))) for r in trial_rows}
@@ -3407,26 +4226,6 @@ def main(argv: Optional[List[str]] = None) -> None:
             method_names = list(methods.keys())
             configured_methods_last = method_names[:]
 
-            online_method = None
-            online_history_rows: List[Dict[str, Any]] = []
-            online_summary: Dict[str, Any] = {}
-            if args.enable_online_stopping:
-                online_method, online_history_rows, online_summary = _run_online_stopping(
-                    X_main,
-                    y,
-                    h0_train_idx=_concat_indices(h0_train_idx_list),
-                    h1_train_idx=_concat_indices(h1_train_idx_list),
-                    h0_calib_idx=_concat_indices(h0_calib_list),
-                    h0_monitor_idx=h0_monitor_idx,
-                    h1_monitor_idx=h1_monitor_idx,
-                    alpha=args.alpha,
-                    tie_mode=args.tie_mode,
-                    tau_guardrail=args.tau_guardrail,
-                    tau_guardrail_delta=args.tau_guardrail_delta,
-                    seed=seed,
-                    args=args,
-                )
-
             # Fit methods
             if args.local_fit_mode == "pooled":
                 fit_all_methods(
@@ -3467,45 +4266,11 @@ def main(argv: Optional[List[str]] = None) -> None:
             else:
                 print("  local_fit_mode=per_region: fitting deferred to per-region evaluation")
 
-            if args.enable_online_stopping:
+            if args.enable_online_stopping and online_as_method:
                 if online_method is not None:
                     methods["Online(refit)"] = online_method
                     method_names.append("Online(refit)")
                     configured_methods_last = method_names[:]
-                    for r in online_history_rows:
-                        r["trial"] = int(trial)
-                        r["seed"] = int(seed)
-                    online_stopping_history_rows.extend(online_history_rows)
-                    online_stopping_summary_rows.append(
-                        {
-                            "trial": int(trial),
-                            "seed": int(seed),
-                            **online_summary,
-                        }
-                    )
-                    if online_history_rows:
-                        last = online_history_rows[-1]
-                        print(
-                            "  online_stopping: "
-                            f"checks={online_summary.get('history_len', 0)} "
-                            f"stopped={online_summary.get('stopped')} reason={online_summary.get('reason')} "
-                            f"tpr={float(last.get('tpr_monitor', float('nan'))):.4f} "
-                            f"fpr={float(last.get('fpr_monitor', float('nan'))):.4f} "
-                            f"tau={float(last.get('tau', float('nan'))):.4f} "
-                            f"samples_used={online_summary.get('samples_total_used', 0)}"
-                        )
-                else:
-                    online_stopping_summary_rows.append(
-                        {
-                            "trial": int(trial),
-                            "seed": int(seed),
-                            **online_summary,
-                        }
-                    )
-                    print(
-                        "  [WARN] online_stopping skipped: "
-                        f"reason={online_summary.get('reason', 'unknown')}"
-                    )
 
             if "BGE Reranker" in methods:
                 bge_m = methods["BGE Reranker"]
@@ -3745,6 +4510,16 @@ def main(argv: Optional[List[str]] = None) -> None:
                         mr["tau_mode"] = "global_on_local_regions"
                         mr["comparison_scope"] = "local_tested_regions"
                         mr["tested_regions"] = int(len(tested_region_ids))
+                    _annotate_train_sample_counts(
+                        matched_rows,
+                        h0_train_idx=gs_matched.H0_train,
+                        h1_train_idx=gs_matched.H1_train,
+                        source=(
+                            "early_stop_train_subset_matched_local_regions"
+                            if early_stop_train_subset_applied
+                            else "matched_local_regions_train_split"
+                        ),
+                    )
                     matched_global_trial_rows.extend(matched_rows)
 
                     local_by_method = {str(r.get("method")): r for r in trial_rows}
@@ -3836,6 +4611,20 @@ def main(argv: Optional[List[str]] = None) -> None:
                         f"trial={trial}: OCATS skipped due to empty pooled train/eval in scope={('local_tested_regions' if tested_region_ids else 'local_eligible_regions')}"
                     )
 
+            train_sample_source = "early_stop_train_subset" if early_stop_train_subset_applied else "local_train_split"
+            method_overrides = (
+                {"Online(refit)": _online_method_train_count_meta(online_summary)}
+                if args.enable_online_stopping and online_as_method and online_method is not None
+                else None
+            )
+            _annotate_train_sample_counts(
+                trial_rows,
+                h0_train_idx=_concat_indices(h0_train_idx_list),
+                h1_train_idx=_concat_indices(h1_train_idx_list),
+                source=train_sample_source,
+                method_overrides=method_overrides,
+            )
+
         trial_summary_rows.extend(trial_rows)
         if trial_rows and args.tau_mode != "global":
             shared_counts = {int(r.get("shared_regions", r.get("ok_regions", 0))) for r in trial_rows}
@@ -3848,8 +4637,28 @@ def main(argv: Optional[List[str]] = None) -> None:
         print_trial_table(trial_rows, alpha=float(args.alpha))
 
     # Aggregate ranking
-    ranking = aggregate_ranking(trial_summary_rows)
-    constrained = print_ranking(ranking, alpha=float(args.alpha))
+    ranking = aggregate_ranking(trial_summary_rows, alpha=float(args.alpha))
+    _attach_train_sample_counts_to_ranking(ranking, trial_summary_rows)
+    for i, row in enumerate(ranking, start=1):
+        row["primary_safety_rank"] = int(i)
+    cache_efficiency_ranking = _build_cache_efficiency_ranking(
+        ranking,
+        alpha=float(args.alpha),
+        tpr_tolerance=float(args.train_dosage_tpr_tolerance),
+    )
+    cache_rank_by_method = {
+        str(r.get("method", "")): int(r.get("cache_efficiency_rank", 0))
+        for r in cache_efficiency_ranking
+    }
+    for row in ranking:
+        method = str(row.get("method", ""))
+        if method in cache_rank_by_method:
+            row["cache_efficiency_rank"] = int(cache_rank_by_method[method])
+    constrained = print_ranking(
+        ranking,
+        alpha=float(args.alpha),
+        tpr_tolerance=float(args.train_dosage_tpr_tolerance),
+    )
 
     # Save outputs
     save_csv_rows(
@@ -3857,19 +4666,39 @@ def main(argv: Optional[List[str]] = None) -> None:
         trial_summary_rows,
         fieldnames=[
             "trial", "seed", "method", "region_key", "tau_mode", "tau", "tau_mean",
+            "train_h0_samples", "train_h1_samples", "train_total_samples",
+            "train_samples_needed", "train_sample_source",
+            "train_dosage_search_active", "train_dosage_monitor_tpr", "train_dosage_monitor_fpr",
+            "train_dosage_fpr_margin", "train_dosage_fpr_limit", "train_dosage_fpr_feasible",
+            "train_dosage_tpr_tolerance", "train_dosage_best_feasible_monitor_tpr",
+            "train_dosage_tpr_gap_from_best_feasible", "train_dosage_max_train",
+            "train_dosage_no_auto_full", "train_dosage_selection_reason",
             "micro_tpr", "micro_fpr", "train_tpr", "train_fpr",
             "macro_tpr", "macro_fpr",
             "ok_regions", "shared_regions", "dropped_regions_for_comparability",
             "input_space", "time_ms",
         ],
     )
-    save_json(run_dir / "ranking.json", {"ranking": ranking})
+    save_json(
+        run_dir / "ranking.json",
+        {
+            "ranking_objective": "primary_safety_then_tpr_then_train_n",
+            "alpha": float(args.alpha),
+            "cache_efficiency_tpr_tolerance": float(args.train_dosage_tpr_tolerance),
+            "ranking": ranking,
+            "cache_efficiency_ranking": cache_efficiency_ranking,
+        },
+    )
     if matched_global_trial_rows:
         save_csv_rows(
             run_dir / "matched_global_trial_summary.csv",
             matched_global_trial_rows,
             fieldnames=[
                 "trial", "seed", "method", "region_key", "tau_mode", "comparison_scope",
+                "train_h0_samples", "train_h1_samples", "train_total_samples",
+                "train_samples_needed", "train_sample_source",
+                "train_dosage_search_active", "train_dosage_monitor_tpr", "train_dosage_monitor_fpr",
+                "train_dosage_selection_reason",
                 "tau", "tau_mean", "micro_tpr", "micro_fpr", "train_tpr", "train_fpr",
                 "macro_tpr", "macro_fpr", "ok_regions", "tested_regions", "input_space", "time_ms",
             ],
@@ -3941,6 +4770,27 @@ def main(argv: Optional[List[str]] = None) -> None:
         save_json(
             run_dir / "online_stopping_summary.json",
             {"rows": online_stopping_summary_rows},
+        )
+    if train_dosage_search_rows:
+        save_csv_rows(
+            run_dir / "train_dosage_search.csv",
+            train_dosage_search_rows,
+            fieldnames=[
+                "trial", "seed", "method",
+                "requested_train_total", "train_dosage_total", "train_h0", "train_h1",
+                "train_h0_samples", "train_h1_samples", "train_total_samples",
+                "monitor_tpr", "monitor_fpr", "monitor_train_tpr", "monitor_train_fpr", "monitor_tau",
+                "alpha", "train_dosage_fpr_margin", "effective_monitor_fpr_limit",
+                "fpr_feasible", "feasible", "selected", "selection_reason",
+                "best_feasible_monitor_tpr", "tpr_gap_from_best_feasible",
+                "train_dosage_tpr_tolerance", "train_dosage_max_train", "train_dosage_no_auto_full",
+                "fit_failed", "failure_reason",
+                "input_space", "time_ms",
+            ],
+        )
+        save_json(
+            run_dir / "train_dosage_search.json",
+            {"rows": train_dosage_search_rows},
         )
     if ocats_trial_rows:
         save_csv_rows(
@@ -4146,6 +4996,8 @@ def main(argv: Optional[List[str]] = None) -> None:
             "cluster_local_region_rows": int(len(cluster_local_region_rows)),
             "online_stopping": {
                 "enabled": bool(args.enable_online_stopping),
+                "early_stop_train_subset_active": bool(getattr(base_args, "early_stop_train_subset", False)),
+                "online_stopping_as_method": bool(_online_stopping_as_method(base_args)),
                 "stop_check_every": int(args.stop_check_every),
                 "stop_window": int(args.stop_window),
                 "stop_patience": int(args.stop_patience),
@@ -4163,6 +5015,23 @@ def main(argv: Optional[List[str]] = None) -> None:
                 "online_init_h1": int(args.online_init_h1),
                 "history_rows": int(len(online_stopping_history_rows)),
                 "summary_rows": int(len(online_stopping_summary_rows)),
+            },
+            "train_dosage_search": {
+                "enabled": bool(base_args.enable_train_dosage_search),
+                "grid": _parse_int_csv(base_args.train_dosage_grid),
+                "grid_auto": bool(not _parse_int_csv(base_args.train_dosage_grid)),
+                "no_auto_full": bool(base_args.train_dosage_no_auto_full),
+                "max_train": (
+                    int(base_args.train_dosage_max_train)
+                    if base_args.train_dosage_max_train is not None
+                    else None
+                ),
+                "tpr_tolerance": float(base_args.train_dosage_tpr_tolerance),
+                "fpr_margin": float(base_args.train_dosage_fpr_margin),
+                "effective_monitor_fpr_limit": float(base_args.alpha - base_args.train_dosage_fpr_margin),
+                "rows": int(len(train_dosage_search_rows)),
+                "monitor_h0": int(base_args.n_monitor_h0),
+                "monitor_h1": int(base_args.n_monitor_h1),
             },
             "optuna": {
                 "enabled": bool(base_args.enable_optuna),
@@ -4185,9 +5054,9 @@ def main(argv: Optional[List[str]] = None) -> None:
     )
 
     if constrained:
-        print(f"\nBest (constrained FPR <= alpha): {constrained[0]['method']}")
+        print(f"\nBest (primary safety ranking): {constrained[0]['method']}")
     elif ranking:
-        print(f"\nBest (unconstrained fallback; none met FPR <= alpha): {ranking[0]['method']}")
+        print(f"\nBest (fallback; none met full safety criteria): {ranking[0]['method']}")
     print(f"[Done] outputs at: {run_dir}")
 
 

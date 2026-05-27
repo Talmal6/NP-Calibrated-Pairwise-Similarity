@@ -1,6 +1,7 @@
 """Threshold application and per-region evaluation loop."""
 from __future__ import annotations
 
+import itertools
 import time
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
@@ -9,6 +10,119 @@ import numpy as np
 
 from .methods import method_input_space, needs_weights, needs_seed, try_fit_method
 from .splits import RegionSplit, GlobalSplit
+
+
+DEBUG_ABLATION_SCORES = False
+DEBUG_ABLATION_COMPARE_METHODS = (
+    "PCAWhitenedCosine",
+    "ablation:pca_whitened_hadamard_linear",
+    "ablation:raw_hadamard_linear",
+    "ablation:diag_whitened_hadamard_linear",
+)
+
+
+def _debug_enabled() -> bool:
+    return bool(DEBUG_ABLATION_SCORES)
+
+
+def _method_debug_mode(method: Any) -> str:
+    for attr in ("resolved_ablation", "ablation", "score_mode", "mode"):
+        value = getattr(method, attr, None)
+        if value is not None:
+            return f"{attr}={value}"
+    return "mode=none"
+
+
+def _input_route_label(space: str) -> str:
+    if space == "mixed":
+        return "preprocessed_feature_matrix+aux"
+    if space == "scalar_score":
+        return "scalar_score_matrix"
+    if space == "text_pair":
+        return "text_pair_matrix"
+    return "preprocessed_feature_matrix"
+
+
+def _score_stats(scores: np.ndarray) -> tuple[float, float, float, float, list[float]]:
+    flat = np.asarray(scores, dtype=np.float64).reshape(-1)
+    if flat.size == 0:
+        return float("nan"), float("nan"), float("nan"), float("nan"), []
+    return (
+        float(np.mean(flat)),
+        float(np.std(flat)),
+        float(np.min(flat)),
+        float(np.max(flat)),
+        [float(x) for x in flat[:5]],
+    )
+
+
+def _debug_print_fit(name: str, method: Any, space: str, fit_H0: np.ndarray, fit_H1: np.ndarray) -> None:
+    if not _debug_enabled():
+        return
+    print(
+        "[DEBUG_ABLATION_FIT] "
+        f"method={name} class={type(method).__name__} {_method_debug_mode(method)} "
+        f"input_route={_input_route_label(space)} "
+        f"train_shapes=H0{tuple(fit_H0.shape)} H1{tuple(fit_H1.shape)}"
+    )
+
+
+def _debug_print_scores(
+    name: str,
+    method: Any,
+    space: str,
+    eval_H0_shape: tuple[int, ...],
+    eval_H1_shape: tuple[int, ...],
+    scores: np.ndarray,
+) -> None:
+    if not _debug_enabled():
+        return
+    mean, std, min_val, max_val, first5 = _score_stats(scores)
+    print(
+        "[DEBUG_ABLATION_SCORE] "
+        f"method={name} class={type(method).__name__} {_method_debug_mode(method)} "
+        f"input_route={_input_route_label(space)} "
+        f"eval_shapes=H0{tuple(eval_H0_shape)} H1{tuple(eval_H1_shape)} "
+        f"score_mean={mean:.6f} score_std={std:.6f} score_min={min_val:.6f} score_max={max_val:.6f} "
+        f"first5={first5}"
+    )
+
+
+def _debug_print_pairwise_comparisons(score_vectors: Dict[str, np.ndarray]) -> None:
+    if not _debug_enabled():
+        return
+
+    names = [name for name in DEBUG_ABLATION_COMPARE_METHODS if name in score_vectors]
+    if len(names) < 2:
+        return
+
+    for left_name, right_name in itertools.combinations(names, 2):
+        left = np.asarray(score_vectors[left_name], dtype=np.float64).reshape(-1)
+        right = np.asarray(score_vectors[right_name], dtype=np.float64).reshape(-1)
+        n = min(left.size, right.size)
+        if n == 0:
+            corr = float("nan")
+            max_abs_diff = float("nan")
+            mean_abs_diff = float("nan")
+            allclose = False
+        else:
+            left = left[:n]
+            right = right[:n]
+            diff = np.abs(left - right)
+            max_abs_diff = float(np.max(diff))
+            mean_abs_diff = float(np.mean(diff))
+            if np.std(left) > 0.0 and np.std(right) > 0.0:
+                corr = float(np.corrcoef(left, right)[0, 1])
+            else:
+                corr = float("nan")
+            allclose = bool(np.allclose(left, right))
+        print(
+            f"[DEBUG_COMPARE] {left_name} vs {right_name}:\n"
+            f"  max_abs_diff={max_abs_diff:.6e}\n"
+            f"  mean_abs_diff={mean_abs_diff:.6e}\n"
+            f"  corr={corr:.6f}\n"
+            f"  allclose={allclose}"
+        )
 
 
 def apply_threshold(scores: np.ndarray, tau: float, tie_mode: str) -> np.ndarray:
@@ -383,6 +497,8 @@ def fit_all_methods(
                 except TypeError:
                     try_fit_method(method, fit_H0, fit_H1, weights=w, seed=s_for_method, alpha=alpha)
 
+            _debug_print_fit(name, method, space, fit_H0, fit_H1)
+
         except Exception as exc:
             failures[name].append(f"trial={trial}: fit failed: {exc}")
             methods.pop(name, None)
@@ -433,6 +549,7 @@ def evaluate_methods(
     method_region_stats: Dict[str, Dict[int, Dict[str, Any]]] = {}
     method_time_ms: Dict[str, float] = {}
     method_space: Dict[str, str] = {}
+    debug_score_vectors: Dict[str, np.ndarray] = {} if _debug_enabled() else {}
 
     for name in method_names:
         if name not in methods:
@@ -450,6 +567,9 @@ def evaluate_methods(
             failures[name].append(f"trial={trial}: method requires embedding input with dim>1")
             continue
         per_region: Dict[int, Dict[str, Any]] = {}
+        debug_scores: List[np.ndarray] = []
+        debug_h0_count = 0
+        debug_h1_count = 0
 
         t_method_start = time.perf_counter()
 
@@ -919,6 +1039,11 @@ def evaluate_methods(
                     dtype=np.float32,
                 ).reshape(-1)
 
+                if _debug_enabled():
+                    debug_scores.append(np.concatenate([sc0_ev, sc1_ev], axis=0))
+                    debug_h0_count += int(H0_ev.shape[0])
+                    debug_h1_count += int(H1_ev.shape[0])
+
                 p0 = apply_threshold(sc0_ev, tau_r, tie_mode)
                 p1 = apply_threshold(sc1_ev, tau_r, tie_mode)
 
@@ -970,6 +1095,21 @@ def evaluate_methods(
         if not per_region:
             failures[name].append(f"trial={trial}: no regions evaluated")
             continue
+
+        if _debug_enabled():
+            if debug_scores:
+                pooled_scores = np.concatenate(debug_scores, axis=0)
+            else:
+                pooled_scores = np.array([], dtype=np.float32)
+            debug_score_vectors[name] = pooled_scores
+            _debug_print_scores(
+                name,
+                method,
+                method_space[name],
+                (debug_h0_count, int(X_main.shape[1])),
+                (debug_h1_count, int(X_main.shape[1])),
+                pooled_scores,
+            )
 
         method_time_ms[name] = float(t_method_ms)
         method_region_stats[name] = per_region
@@ -1051,36 +1191,87 @@ def evaluate_methods(
         }
         trial_rows.append(row)
 
+    _debug_print_pairwise_comparisons(debug_score_vectors)
+
     return trial_rows
 
 
 def aggregate_ranking(
     trial_summary_rows: List[Dict[str, Any]],
+    *,
+    alpha: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
-    """Aggregate per-trial rows into a ranking sorted by mean micro TPR."""
+    """Aggregate per-trial rows into a safety-first ranking."""
     agg: Dict[str, Dict[str, List[float]]] = defaultdict(lambda: defaultdict(list))
     for r in trial_summary_rows:
         agg[r["method"]]["micro_tpr"].append(float(r["micro_tpr"]))
         agg[r["method"]]["micro_fpr"].append(float(r["micro_fpr"]))
         agg[r["method"]]["macro_tpr"].append(float(r["macro_tpr"]))
         agg[r["method"]]["macro_fpr"].append(float(r["macro_fpr"]))
+        train_n = r.get("train_samples_needed", r.get("train_total_samples"))
+        if train_n not in (None, ""):
+            agg[r["method"]]["train_n"].append(float(train_n))
 
     ranking = []
     for m, d in agg.items():
+        fprs = np.asarray(d["micro_fpr"], dtype=np.float64)
+        tprs = np.asarray(d["micro_tpr"], dtype=np.float64)
+        train_counts = np.asarray(d.get("train_n", []), dtype=np.float64)
+        alpha_val = float(alpha) if alpha is not None else float("nan")
+        valid_rate = (
+            float(np.mean(fprs <= alpha_val + 1e-12))
+            if alpha is not None and fprs.size > 0
+            else float("nan")
+        )
+        mean_train_n = float(np.mean(train_counts)) if train_counts.size > 0 else float("nan")
+        min_train_n = int(np.min(train_counts)) if train_counts.size > 0 else None
+        max_train_n = int(np.max(train_counts)) if train_counts.size > 0 else None
         ranking.append(
             {
                 "method": m,
-                "mean_micro_tpr": float(np.mean(d["micro_tpr"])),
-                "std_micro_tpr": float(np.std(d["micro_tpr"])),
-                "mean_micro_fpr": float(np.mean(d["micro_fpr"])),
-                "std_micro_fpr": float(np.std(d["micro_fpr"])),
+                "mean_micro_tpr": float(np.mean(tprs)),
+                "std_micro_tpr": float(np.std(tprs)),
+                "mean_micro_fpr": float(np.mean(fprs)),
+                "std_micro_fpr": float(np.std(fprs)),
+                "mean_eval_tpr": float(np.mean(tprs)),
+                "mean_eval_fpr": float(np.mean(fprs)),
+                "max_eval_fpr": float(np.max(fprs)) if fprs.size > 0 else float("nan"),
+                "valid_rate": valid_rate,
+                "mean_train_n": mean_train_n,
+                "min_train_n": min_train_n,
+                "max_train_n": max_train_n,
                 "mean_macro_tpr": float(np.mean(d["macro_tpr"])),
                 "std_macro_tpr": float(np.std(d["macro_tpr"])),
                 "mean_macro_fpr": float(np.mean(d["macro_fpr"])),
                 "std_macro_fpr": float(np.std(d["macro_fpr"])),
             }
         )
-    ranking.sort(key=lambda r: r["mean_micro_tpr"], reverse=True)
+
+    if alpha is None:
+        ranking.sort(key=lambda r: r["mean_micro_tpr"], reverse=True)
+    else:
+        alpha_val = float(alpha)
+
+        def safety_key(r: Dict[str, Any]) -> tuple[Any, ...]:
+            valid_rate = float(r.get("valid_rate", 0.0))
+            mean_fpr = float(r.get("mean_eval_fpr", r.get("mean_micro_fpr", float("inf"))))
+            max_fpr = float(r.get("max_eval_fpr", float("inf")))
+            mean_tpr = float(r.get("mean_eval_tpr", r.get("mean_micro_tpr", float("-inf"))))
+            train_n = float(r.get("mean_train_n", float("inf")))
+            if not np.isfinite(train_n):
+                train_n = float("inf")
+            return (
+                0 if valid_rate >= 1.0 - 1e-12 else 1,
+                0 if mean_fpr <= alpha_val + 1e-12 else 1,
+                0 if max_fpr <= alpha_val + 1e-12 else 1,
+                -mean_tpr,
+                train_n,
+                -valid_rate,
+            )
+
+        ranking.sort(key=safety_key)
+    for i, row in enumerate(ranking, start=1):
+        row["primary_safety_rank"] = int(i)
     return ranking
 
 
@@ -1108,6 +1299,7 @@ def evaluate_methods_global(
     *region_id* (metadata only — no sample is discarded).
     """
     trial_rows: List[Dict[str, Any]] = []
+    debug_score_vectors: Dict[str, np.ndarray] = {} if _debug_enabled() else {}
 
     for name in method_names:
         if name not in methods:
@@ -1210,6 +1402,18 @@ def evaluate_methods_global(
                     ),
                     dtype=np.float32,
                 ).reshape(-1)
+
+                pooled_scores = np.concatenate([sc0_ev, sc1_ev], axis=0)
+                _debug_print_scores(
+                    name,
+                    method,
+                    space,
+                    tuple(X_main[gs.H0_eval].shape),
+                    tuple(X_main[gs.H1_eval].shape),
+                    pooled_scores,
+                )
+                if _debug_enabled():
+                    debug_score_vectors[name] = pooled_scores
 
                 p0 = apply_threshold(sc0_ev, tau, tie_mode)
                 p1 = apply_threshold(sc1_ev, tau, tie_mode)
@@ -1316,5 +1520,7 @@ def evaluate_methods_global(
             "time_ms": float(t_ms),
         }
         trial_rows.append(row)
+
+    _debug_print_pairwise_comparisons(debug_score_vectors)
 
     return trial_rows
