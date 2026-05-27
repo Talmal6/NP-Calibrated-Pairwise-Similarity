@@ -1,0 +1,14 @@
+------------------------------------
+Wed 29 Apr 2026 10:33:51 IDT
+SLURM_JOBID:		17260981
+SLURM_JOB_NODELIST:	ise-cpu256-11
+SLURM_SCRATCH_DIR:	/scratch/malmatal/17260981
+Allocated Resouces:	cpu - 4 / mem - 32768 MB / gpu - 0
+SLURM_GPU_INDEX:	0
+Running as malmatal from gilein account with normal QOS
+------------------------------------
+Loading existing data from NeighborCache/data/h1h0_final.npz...
+Loaded 200000 samples
+
+Loading model redis/langcache-embed-v2...
+

@@ -3,9 +3,20 @@ from __future__ import annotations
 
 import pickle
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+
+
+_RAW_PAIR_KEY_CANDIDATES: List[Tuple[str, str]] = [
+    ("x", "y"),
+    ("x_emb", "y_emb"),
+    ("x_embedding", "y_embedding"),
+    ("query_emb", "anchor_emb"),
+    ("query_embedding", "anchor_embedding"),
+    ("q1_emb", "q2_emb"),
+    ("emb_x", "emb_y"),
+]
 
 
 def resolve_npz_path(data_path: str) -> Path:
@@ -36,6 +47,84 @@ def _is_numeric_1d(a: Any) -> bool:
     if a.ndim != 1 or a.shape[0] < 1:
         return False
     return a.dtype.kind in "fc"
+
+
+def _pairwise_cosine_rows(X: np.ndarray, Y: np.ndarray, eps: float = 1e-12) -> np.ndarray:
+    Xv = np.asarray(X, dtype=np.float32)
+    Yv = np.asarray(Y, dtype=np.float32)
+    if Xv.ndim != 2 or Yv.ndim != 2:
+        raise ValueError(f"Pair embeddings must be 2D, got X={Xv.shape} Y={Yv.shape}")
+    if Xv.shape != Yv.shape:
+        raise ValueError(f"Pair embeddings shape mismatch: X={Xv.shape} Y={Yv.shape}")
+
+    num = np.sum(Xv * Yv, axis=1, dtype=np.float64)
+    den = np.linalg.norm(Xv, axis=1) * np.linalg.norm(Yv, axis=1)
+    cos = num / np.maximum(den, float(eps))
+    cos = np.nan_to_num(cos, nan=0.0, posinf=1.0, neginf=-1.0)
+    cos = np.clip(cos, -1.0, 1.0)
+    return cos.astype(np.float32, copy=False)
+
+
+def resolve_train_pairwise_cosine(
+    ds: Dict[str, np.ndarray],
+    *,
+    x_key: Optional[str] = None,
+    y_key: Optional[str] = None,
+) -> Tuple[Optional[str], Optional[np.ndarray]]:
+    """Resolve raw pair embeddings and compute per-row cosine(x, y).
+
+    Returns:
+      source_key_pair: "x_key+y_key" string when resolved, else None
+      pair_cosine:      float32 (N,) cosine values when resolved, else None
+
+    If explicit keys are provided, strict validation is applied and a ValueError
+    is raised on mismatch.
+    """
+    if (x_key is None) != (y_key is None):
+        raise ValueError("train pair cosine requires both --train_pair_x_key and --train_pair_y_key")
+
+    n_rows = None
+    if "label" in ds:
+        n_rows = int(np.asarray(ds["label"]).shape[0])
+
+    explicit = x_key is not None and y_key is not None
+    candidates = [(str(x_key), str(y_key))] if explicit else list(_RAW_PAIR_KEY_CANDIDATES)
+
+    for kx, ky in candidates:
+        if kx not in ds or ky not in ds:
+            continue
+
+        X = np.asarray(ds[kx])
+        Y = np.asarray(ds[ky])
+
+        if not _is_numeric_2d(X) or not _is_numeric_2d(Y):
+            if explicit:
+                raise ValueError(
+                    f"train pair keys must be numeric 2D arrays, got {kx}:{X.dtype}/{X.shape}, {ky}:{Y.dtype}/{Y.shape}"
+                )
+            continue
+
+        if X.shape != Y.shape:
+            if explicit:
+                raise ValueError(f"train pair key shape mismatch: {kx}:{X.shape} vs {ky}:{Y.shape}")
+            continue
+
+        if n_rows is not None and int(X.shape[0]) != n_rows:
+            if explicit:
+                raise ValueError(
+                    f"train pair key row mismatch with labels: {kx}:{X.shape[0]} vs label:{n_rows}"
+                )
+            continue
+
+        return f"{kx}+{ky}", _pairwise_cosine_rows(X, Y)
+
+    if explicit:
+        keys = sorted(ds.keys())
+        raise ValueError(
+            "Could not resolve train pair embeddings from explicit keys "
+            f"({x_key}, {y_key}). Available keys={keys}"
+        )
+    return None, None
 
 
 def resolve_features(ds: Dict[str, np.ndarray]) -> Tuple[str, np.ndarray, Optional[np.ndarray]]:

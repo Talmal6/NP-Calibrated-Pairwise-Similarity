@@ -1,0 +1,1 @@
+task_id	group	name	dataset_id	dataset_path	alpha	tau_mode	seed	n_train	n_calib	n_eval	hadamard	n_trials	exit_code	command

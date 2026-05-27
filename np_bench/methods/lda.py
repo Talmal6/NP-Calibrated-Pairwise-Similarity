@@ -10,8 +10,28 @@ class LDAMethod(BaseMethod):
     needs_weights = False
     needs_seed = False
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        solver: str = "lsqr",
+        shrinkage: str | float | None = "auto",
+        tol: float = 1e-4,
+    ):
         self.clf = None
+        if solver not in {"svd", "lsqr", "eigen"}:
+            raise ValueError("LDAMethod solver must be one of {'svd', 'lsqr', 'eigen'}")
+        self.solver = str(solver)
+        if isinstance(shrinkage, str):
+            shrinkage_norm = shrinkage.strip().lower()
+            if shrinkage_norm in {"none", "null"}:
+                self.shrinkage = None
+            elif shrinkage_norm == "auto":
+                self.shrinkage = "auto"
+            else:
+                self.shrinkage = float(shrinkage_norm)
+        else:
+            self.shrinkage = shrinkage
+        self.tol = float(max(0.0, tol))
 
     def fit(
         self,
@@ -24,7 +44,12 @@ class LDAMethod(BaseMethod):
         X_tr = np.vstack([H0_train, H1_train])
         y_tr = np.hstack([np.zeros(len(H0_train)), np.ones(len(H1_train))])
 
-        self.clf = LinearDiscriminantAnalysis(solver="lsqr", shrinkage="auto")
+        shrinkage = None if self.solver == "svd" else self.shrinkage
+        self.clf = LinearDiscriminantAnalysis(
+            solver=self.solver,
+            shrinkage=shrinkage,
+            tol=self.tol,
+        )
         self.clf.fit(X_tr, y_tr)
         return self
 

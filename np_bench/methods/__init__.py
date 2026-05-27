@@ -16,7 +16,13 @@ from .projector import ProjectedMethod
 from .cosine_augmented import CosineAugmentedMethod
 from .precomputed_cosine import PrecomputedCosineMethod
 from .tiny_mlp import TinyMLPMethod
-from .andbox import AndBoxHCMethod
+from .andbox import AndBoxHCMethod, AndBoxWgtMethod
+from .fisher_hadamard_methods import (
+    HadamardCosineMethod,
+    FisherWhitenedHadamardPooledMethod,
+    FisherWhitenedHadamardWithinMethod,
+    StabilizedWhitenedCosineMethod,
+)
 
 def _has_xgb() -> bool:
     try:
@@ -37,6 +43,12 @@ def _try_import_new_methods():
     try:
         from .whitened_cosine import WhitenedCosineMethod  # type: ignore
         out["WhitenedCosineMethod"] = WhitenedCosineMethod
+    except Exception:
+        pass
+
+    try:
+        from .whitened_cosine import WhitenedLinearMethod  # type: ignore
+        out["WhitenedLinearMethod"] = WhitenedLinearMethod
     except Exception:
         pass
 
@@ -88,6 +100,31 @@ def _try_import_new_methods():
     except Exception:
         pass
 
+    # Fisher/Hadamard score-side methods
+    try:
+        from .fisher_hadamard_methods import HadamardCosineMethod  # type: ignore
+        out["HadamardCosineMethod"] = HadamardCosineMethod
+    except Exception:
+        pass
+
+    # try:
+    #     from .fisher_hadamard_methods import FisherWhitenedHadamardPooledMethod  # type: ignore
+    #     out["FisherWhitenedHadamardPooledMethod"] = FisherWhitenedHadamardPooledMethod
+    # except Exception:
+    #     pass
+
+    # try:
+    #     from .fisher_hadamard_methods import FisherWhitenedHadamardWithinMethod  # type: ignore
+    #     out["FisherWhitenedHadamardWithinMethod"] = FisherWhitenedHadamardWithinMethod
+    # except Exception:
+    #     pass
+
+    # try:
+    #     from .fisher_hadamard_methods import StabilizedWhitenedCosineMethod  # type: ignore
+    #     out["StabilizedWhitenedCosineMethod"] = StabilizedWhitenedCosineMethod
+    # except Exception:
+    #     pass
+
     return out
 
 
@@ -101,14 +138,11 @@ def get_default_methods(has_xgb: bool | None = None):
         judges: list[OnlineBaseMethod] = [
             CosineMethod(),
         ]
-        if "WhitenedCosineMethod" in opt:
-            judges.append(opt["WhitenedCosineMethod"]())
         if has_xgb:
             from .xgboost import XGBoostLightMethod
             judges.append(XGBoostLightMethod())
 
         judges += [
-            NaiveBayesMethod(),
             TinyMLPMethod(),
             LDAMethod(),
         ]
@@ -122,6 +156,12 @@ def get_default_methods(has_xgb: bool | None = None):
         CosineMethod(),
     ]
     base_methods.append( AndBoxHCMethod())
+    if "HadamardCosineMethod" in opt:
+        base_methods.append(opt["HadamardCosineMethod"]())
+    if "FisherWhitenedHadamardPooledMethod" in opt:
+        base_methods.append(opt["FisherWhitenedHadamardPooledMethod"]())
+    if "FisherWhitenedHadamardWithinMethod" in opt:
+        base_methods.append(opt["FisherWhitenedHadamardWithinMethod"]())
     # Whitening / Mahalanobis family (NEW)
     if "WhitenedCosineMethod" in opt:
         base_methods.append(opt["WhitenedCosineMethod"]())  # WhitenedCosine
@@ -134,6 +174,7 @@ def get_default_methods(has_xgb: bool | None = None):
         LogisticRegressionMethod(),
         LDAMethod(),
         TinyMLPMethod(),
+
     ]
 
     # Multi-prototype cosine (NEW)
@@ -180,43 +221,43 @@ def get_default_methods(has_xgb: bool | None = None):
     # ============================================================
     # Projected methods (keep only ones that make geometric sense)
     # ============================================================
-    projected_methods: list[OnlineBaseMethod] = [
-        # Projected ensemble variants (projection applied before ensemble fit)
-        # LDA projections
-        ProjectedMethod(
-            name="LDA1+LogReg",
-            base_method=LogisticRegressionMethod(),
-            proj_kind="lda",
-            proj_dim=1,
-        ),
+    # projected_methods: list[OnlineBaseMethod] = [
+    #     # Projected ensemble variants (projection applied before ensemble fit)
+    #     # LDA projections
+    #     ProjectedMethod(
+    #         name="LDA1+LogReg",
+    #         base_method=LogisticRegressionMethod(),
+    #         proj_kind="lda",
+    #         proj_dim=1,
+    #     ),
 
-        # PCA only with strong linear-ish models
-        ProjectedMethod(
-            name="PCA16+LogReg",
-            base_method=LogisticRegressionMethod(),
-            proj_kind="pca",
-            proj_dim=16,
-        ),
-        ProjectedMethod(
-            name="PCA32+LogReg",
-            base_method=LogisticRegressionMethod(),
-            proj_kind="pca",
-            proj_dim=32,
-        ),
-        ProjectedMethod(
-            name="PCA16+VecWeighted",
-            base_method=VectorWeightedMethod(),
-            proj_kind="pca",
-            proj_dim=16,
-        ),
-        ProjectedMethod(
-            name="PCA32+VecWeighted",
-            base_method=VectorWeightedMethod(),
-            proj_kind="pca",
-            proj_dim=32,
-        ),
+    #     # PCA only with strong linear-ish models
+    #     ProjectedMethod(
+    #         name="PCA16+LogReg",
+    #         base_method=LogisticRegressionMethod(),
+    #         proj_kind="pca",
+    #         proj_dim=16,
+    #     ),
+    #     ProjectedMethod(
+    #         name="PCA32+LogReg",
+    #         base_method=LogisticRegressionMethod(),
+    #         proj_kind="pca",
+    #         proj_dim=32,
+    #     ),
+    #     ProjectedMethod(
+    #         name="PCA16+VecWeighted",
+    #         base_method=VectorWeightedMethod(),
+    #         proj_kind="pca",
+    #         proj_dim=16,
+    #     ),
+    #     ProjectedMethod(
+    #         name="PCA32+VecWeighted",
+    #         base_method=VectorWeightedMethod(),
+    #         proj_kind="pca",
+    #         proj_dim=32,
+    #     ),
 
-    ]
+    # ]
 
     # ============================================================
     # Cosine-augmented (keep the winners)
@@ -248,4 +289,4 @@ def get_default_methods(has_xgb: bool | None = None):
     #     ),
     # ]
 
-    return base_methods + projected_methods 
+    return base_methods 

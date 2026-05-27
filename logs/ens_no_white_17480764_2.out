@@ -1,0 +1,25 @@
+------------------------------------
+Mon 11 May 2026 16:37:53 IDT
+SLURM_JOBID:		17480764
+SLURM_JOB_NODELIST:	ise-4090-08
+SLURM_SCRATCH_DIR:	/scratch/malmatal/17480764
+Allocated Resouces:	cpu - 4 / mem - 32768 MB / gpu - 1
+SLURM_GPU_INDEX:	1
+Running as malmatal from gilein account with normal QOS
+------------------------------------
+SLURM_JOB_ID=17480764
+SLURM_ARRAY_JOB_ID=17480764
+SLURM_ARRAY_TASK_ID=2
+HOSTNAME=ise-4090-08.auth.ad.bgu.ac.il
+DATE=2026-05-11T16:37:53+03:00
+CONDA_ENV_NAME=ec
+DATASET_ID=lmsys
+EXP_ROOT=NeighborCache/results/ensemble_without_whitened_17480764
+conda command found
+PYTHON_BIN=
+Running command:
+conda run -n ec python -m NeighborCache.region_local_threshold.cli --data NeighborCache/data/lmsys_h1h0_by_cluster_h1keep_with_unormalized_embedding_fixed.npz --region_key global_cluster --alpha 0.05 --tau_mode global --n_trials 50 --seed 42 --n_train 1200 --n_calib 1200 --n_eval 1200 --hadamard_preprocess 
+Task log: NeighborCache/results/ensemble_without_whitened_17480764/task_logs/2_lmsys.out
+Task err: NeighborCache/results/ensemble_without_whitened_17480764/task_logs/2_lmsys.err
+Task completed successfully.
+Results root: NeighborCache/results/ensemble_without_whitened_17480764

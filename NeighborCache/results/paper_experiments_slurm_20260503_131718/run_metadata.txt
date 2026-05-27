@@ -1,0 +1,8 @@
+experiment_root=NeighborCache/results/paper_experiments_slurm_20260503_131718
+date=2026-05-03T13:17:18+03:00
+pwd=/home/malmatal/Projects/Multi_Dim_Threshold
+conda_env_name=ec
+python_bin=/home/malmatal/.conda/envs/ec/bin/python
+n_tasks=1
+max_parallel=1
+git_commit=f154d8c0762253cbf7b114e79da137b217d8c316

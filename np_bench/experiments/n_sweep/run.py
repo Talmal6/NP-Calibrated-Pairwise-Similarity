@@ -14,6 +14,9 @@ from np_bench.utils.split import split_by_class_triplet
 
 from np_bench.methods import (
     CosineMethod,
+    HadamardCosineMethod,
+    FisherWhitenedHadamardPooledMethod,
+    FisherWhitenedHadamardWithinMethod,
     VectorWeightedMethod,
     NaiveBayesMethod,
     LogisticRegressionMethod,
@@ -70,7 +73,16 @@ def main():
     top_k = sorted_idx[-args.d:]
     w_d = fisher[top_k]
 
-    method_names = ["Cosine", "Vec (Wgt)", "Naive Bayes", "Log Reg", "LDA"]
+    method_names = [
+        "Cosine",
+        "HadamardCosine",
+        "FWHS-pooled",
+        "FWHS-within",
+        "Vec (Wgt)",
+        "Naive Bayes",
+        "Log Reg",
+        "LDA",
+    ]
     if HAS_XGB:
         method_names.append("XGBoost")
     method_names.extend(["Tiny MLP", "AndBox-HC", "AndBox-Wgt"])
@@ -110,6 +122,9 @@ def main():
             # Create method instances
             methods = {
                 "Cosine": CosineMethod(),
+                "HadamardCosine": HadamardCosineMethod(),
+                "FWHS-pooled": FisherWhitenedHadamardPooledMethod(),
+                "FWHS-within": FisherWhitenedHadamardWithinMethod(),
                 "Vec (Wgt)": VectorWeightedMethod(),
                 "Naive Bayes": NaiveBayesMethod(),
                 "Log Reg": LogisticRegressionMethod(),

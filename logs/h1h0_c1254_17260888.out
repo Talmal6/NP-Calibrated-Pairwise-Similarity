@@ -1,0 +1,9 @@
+------------------------------------
+Wed 29 Apr 2026 10:18:33 IDT
+SLURM_JOBID:		17260888
+SLURM_JOB_NODELIST:	cs-6000-04
+SLURM_SCRATCH_DIR:	/scratch/malmatal/17260888
+Allocated Resouces:	cpu - 4 / mem - 32768 MB / gpu - 6
+SLURM_GPU_INDEX:	6
+Running as malmatal from gilein account with normal QOS
+------------------------------------

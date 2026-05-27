@@ -1,0 +1,49 @@
+Traceback (most recent call last):
+  File "/home/malmatal/.conda/envs/ec/lib/python3.12/site-packages/huggingface_hub/utils/_http.py", line 657, in hf_raise_for_status
+    response.raise_for_status()
+  File "/home/malmatal/.conda/envs/ec/lib/python3.12/site-packages/httpx/_models.py", line 829, in raise_for_status
+    raise HTTPStatusError(message, request=request, response=self)
+httpx.HTTPStatusError: Client error '404 Not Found' for url 'https://huggingface.co/api/models/redis/langcache-embed-v2/tree/main/additional_chat_templates?recursive=false&expand=false'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/malmatal/Projects/Multi_Dim_Threshold/generate_langcache_embeddings.py", line 95, in <module>
+    main()
+  File "/home/malmatal/Projects/Multi_Dim_Threshold/generate_langcache_embeddings.py", line 41, in main
+    model = SentenceTransformer(MODEL_NAME, device=DEVICE)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/malmatal/.conda/envs/ec/lib/python3.12/site-packages/sentence_transformers/SentenceTransformer.py", line 327, in __init__
+    modules, self.module_kwargs = self._load_sbert_model(
+                                  ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/malmatal/.conda/envs/ec/lib/python3.12/site-packages/sentence_transformers/SentenceTransformer.py", line 2305, in _load_sbert_model
+    module = module_class.load(
+             ^^^^^^^^^^^^^^^^^^
+  File "/home/malmatal/.conda/envs/ec/lib/python3.12/site-packages/sentence_transformers/models/Transformer.py", line 366, in load
+    return cls(model_name_or_path=model_name_or_path, **init_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/malmatal/.conda/envs/ec/lib/python3.12/site-packages/sentence_transformers/models/Transformer.py", line 103, in __init__
+    self.tokenizer = AutoTokenizer.from_pretrained(
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/malmatal/.conda/envs/ec/lib/python3.12/site-packages/transformers/models/auto/tokenization_auto.py", line 1156, in from_pretrained
+    return tokenizer_class.from_pretrained(pretrained_model_name_or_path, *inputs, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/malmatal/.conda/envs/ec/lib/python3.12/site-packages/transformers/tokenization_utils_base.py", line 2039, in from_pretrained
+    for template in list_repo_templates(
+                    ^^^^^^^^^^^^^^^^^^^^
+  File "/home/malmatal/.conda/envs/ec/lib/python3.12/site-packages/transformers/utils/hub.py", line 169, in list_repo_templates
+    for entry in list_repo_tree(
+                 ^^^^^^^^^^^^^^^
+  File "/home/malmatal/.conda/envs/ec/lib/python3.12/site-packages/huggingface_hub/hf_api.py", line 3321, in list_repo_tree
+    for path_info in paginate(path=tree_url, headers=headers, params={"recursive": recursive, "expand": expand}):
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/malmatal/.conda/envs/ec/lib/python3.12/site-packages/huggingface_hub/utils/_pagination.py", line 37, in paginate
+    hf_raise_for_status(r)
+  File "/home/malmatal/.conda/envs/ec/lib/python3.12/site-packages/huggingface_hub/utils/_http.py", line 671, in hf_raise_for_status
+    raise _format(RemoteEntryNotFoundError, message, response) from e
+huggingface_hub.errors.RemoteEntryNotFoundError: 404 Client Error. (Request ID: Root=1-69f1b1e2-2a7505a03d4fd6b11c2a4b00;cdf959f2-ce3f-45b7-97a6-34797d526c42)
+
+Entry Not Found for url: https://huggingface.co/api/models/redis/langcache-embed-v2/tree/main/additional_chat_templates?recursive=false&expand=false.
+additional_chat_templates does not exist on "main"
+[W429 10:23:15.780398254 AllocatorConfig.cpp:28] Warning: PYTORCH_CUDA_ALLOC_CONF is deprecated, use PYTORCH_ALLOC_CONF instead (function operator())

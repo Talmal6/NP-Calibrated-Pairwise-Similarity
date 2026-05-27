@@ -1,0 +1,58 @@
+experiment_root=NeighborCache/results/paper_experiments_slurm_20260503_130920
+date=2026-05-03T13:09:20+03:00
+hostname=ise-4090-11.auth.ad.bgu.ac.il
+pwd=/home/malmatal/Projects/Multi_Dim_Threshold
+data=NeighborCache/data/h1h0_final.npz
+cli_module=NeighborCache.region_local_threshold.cli
+region_key=global_cluster
+full_n_train=1270
+full_n_calib=1240
+full_n_eval=1270
+smoke_trials=5
+main_trials=50
+ablation_trials=50
+alphas=0.01 0.03 0.05 0.10
+seeds=42 43 44 45 46
+train_sizes=100 250 500 750 1000 1270
+calib_sizes=100 250 500 750 1000 1240
+tau_modes=global local
+n_tasks=90
+max_parallel=8
+python_bin=python
+env_setup=
+partition=
+account=
+qos=
+time=04:00:00
+cpus_per_task=4
+mem=16G
+gpus=0
+
+git_commit=f154d8c0762253cbf7b114e79da137b217d8c316
+git_branch=optuna
+git_status_short:
+ M NeighborCache/region_local_threshold/cli.py
+ M NeighborCache/region_local_threshold/io_helpers.py
+ M np_bench/methods/__init__.py
+ M np_bench/methods/__pycache__/__init__.cpython-312.pyc
+ M np_bench/methods/__pycache__/__init__.cpython-39.pyc
+ M np_bench/methods/__pycache__/lda.cpython-312.pyc
+ M np_bench/methods/__pycache__/lda.cpython-39.pyc
+ M np_bench/methods/__pycache__/tiny_mlp.cpython-312.pyc
+ M np_bench/methods/__pycache__/tiny_mlp.cpython-39.pyc
+ M np_bench/methods/__pycache__/xgboost.cpython-312.pyc
+ M np_bench/methods/__pycache__/xgboost.cpython-39.pyc
+ M np_bench/methods/lda.py
+ M np_bench/methods/tiny_mlp.py
+ M np_bench/methods/whitened_cosine.py
+ M np_bench/methods/xgboost.py
+ M requirements.txt
+?? NeighborCache/optimization/
+?? NeighborCache/results/
+?? extract_cluster.py
+?? generate_langcache_embeddings.py
+?? logs/
+?? neighborcache_experiment_array.sbatch
+?? run_h1h0_langcache_rtx6000.sbatch
+?? run_neighborcache_paper_experiments_serial.sbatch
+?? submit_neighborcache_paper_experiments.sh

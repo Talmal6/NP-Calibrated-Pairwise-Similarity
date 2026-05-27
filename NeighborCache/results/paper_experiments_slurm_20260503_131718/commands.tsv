@@ -1,0 +1,2 @@
+task_id	group	name	alpha	tau_mode	seed	n_train	n_calib	n_eval	hadamard	n_trials	command
+1	smoke	smoke_small_data	0.05	global	42	300	300	300	1	5	/home/malmatal/.conda/envs/ec/bin/python -m NeighborCache.region_local_threshold.cli --data NeighborCache/data/h1h0_final.npz --region_key global_cluster --alpha 0.05 --tau_mode global --n_trials 5 --seed 42 --n_train 300 --n_calib 300 --n_eval 300 --hadamard_preprocess

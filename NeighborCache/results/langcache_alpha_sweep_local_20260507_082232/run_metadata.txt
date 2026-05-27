@@ -1,0 +1,16 @@
+experiment_root=NeighborCache/results/langcache_alpha_sweep_local_20260507_082232
+date=2026-05-07T08:22:32+03:00
+host=cs-4090-08.auth.ad.bgu.ac.il
+pwd=/home/malmatal/Projects/Multi_Dim_Threshold
+python=/home/malmatal/.conda/envs/ec/bin/python
+data=NeighborCache/data/h1h0_final_langcache.npz
+mode=local_current_processor
+alphas=0.01 0.03 0.05 0.10
+n_trials=50
+n_train=1270
+n_calib=1240
+n_eval=1270
+hadamard=true
+tau_mode=global
+seed=42
+git_commit=f154d8c0762253cbf7b114e79da137b217d8c316

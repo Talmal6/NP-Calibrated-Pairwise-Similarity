@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
+import json
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -18,7 +21,7 @@ from np_bench.utils import make_run_dir, save_csv_rows, save_json
 from np_bench.methods.base import OnlineBaseMethod
 
 from .io_helpers import resolve_npz_path, load_npz, resolve_features
-from .io_helpers import resolve_text_pairs
+from .io_helpers import resolve_text_pairs, resolve_train_pairwise_cosine
 from .methods import build_methods, needs_weights
 from .splits import (
     GlobalSplit,
@@ -33,6 +36,12 @@ from .evaluation import fit_all_methods, evaluate_methods, evaluate_methods_glob
 from .display import print_trial_table, print_ranking
 from .stopping_mechanism import OnlineStopper, StopConfig
 from .ocats_baselines import run_ocats_baselines_for_split
+from NeighborCache.optimization.optuna_search import (
+    apply_params_to_namespace,
+    run_optuna_search,
+    split_global_eval_for_validation,
+    split_region_eval_for_validation,
+)
 
 NC_ROOT = ROOT / "NeighborCache"
 OUT_BASE = NC_ROOT / "outputs" / "region_local_threshold"
@@ -277,6 +286,304 @@ def _build_global_split_from_local_regions(
         H0_eval=_concat_indices([s.H0_eval for s in chosen]),
         H1_eval=_concat_indices([s.H1_eval for s in chosen]),
     )
+
+
+def _class1_ratio(n0: int, n1: int) -> float:
+    total = int(n0) + int(n1)
+    if total <= 0:
+        return float("nan")
+    return float(int(n1) / total)
+
+
+def _repeat_train_indices_by_hardness(
+    idx: np.ndarray,
+    *,
+    pair_cosine: np.ndarray,
+    for_h0: bool,
+    gamma: float,
+    extra_repeats: int,
+) -> tuple[np.ndarray, Dict[str, float]]:
+    idx = np.asarray(idx, dtype=np.int64).reshape(-1)
+    if idx.size == 0:
+        return idx, {
+            "mean_hardness": float("nan"),
+            "mean_repeat": float("nan"),
+        }
+
+    cos = np.asarray(pair_cosine[idx], dtype=np.float32).reshape(-1)
+    cos01 = np.clip((cos + 1.0) * 0.5, 0.0, 1.0)
+    hardness = cos01 if for_h0 else (1.0 - cos01)
+
+    scaled = np.power(hardness.astype(np.float64), float(gamma))
+    repeats = 1 + np.rint(float(extra_repeats) * scaled).astype(np.int64)
+    repeats = np.maximum(repeats, 1)
+
+    out = np.repeat(idx, repeats)
+    return out.astype(np.int64, copy=False), {
+        "mean_hardness": float(np.mean(hardness)),
+        "mean_repeat": float(np.mean(repeats)),
+    }
+
+
+def _apply_train_cosine_policy_to_indices(
+    h0_idx: np.ndarray,
+    h1_idx: np.ndarray,
+    *,
+    pair_cosine: np.ndarray,
+    cosine_min: Optional[float],
+    cosine_max: Optional[float],
+    use_hardness_weighting: bool,
+    hardness_gamma: float,
+    hardness_extra_repeats: int,
+) -> tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
+    h0 = np.asarray(h0_idx, dtype=np.int64).reshape(-1)
+    h1 = np.asarray(h1_idx, dtype=np.int64).reshape(-1)
+
+    cos = np.asarray(pair_cosine, dtype=np.float32).reshape(-1)
+    all_idx = _concat_indices([h0, h1])
+    if all_idx.size > 0 and int(np.max(all_idx)) >= cos.shape[0]:
+        raise ValueError(
+            "train cosine policy index out of range: "
+            f"max_train_idx={int(np.max(all_idx))} pair_cos_rows={int(cos.shape[0])}"
+        )
+
+    band_active = cosine_min is not None or cosine_max is not None
+    if use_hardness_weighting and band_active:
+        raise ValueError(
+            "Use either train cosine-band filtering or hardness weighting, not both simultaneously."
+        )
+
+    cmin = -1.0 if cosine_min is None else float(cosine_min)
+    cmax = 1.0 if cosine_max is None else float(cosine_max)
+    if cmin > cmax:
+        raise ValueError(f"Invalid cosine band: min={cmin} > max={cmax}")
+
+    h0_kept = h0
+    h1_kept = h1
+    if band_active:
+        keep0 = (cos[h0] >= cmin) & (cos[h0] <= cmax) if h0.size > 0 else np.zeros(0, dtype=bool)
+        keep1 = (cos[h1] >= cmin) & (cos[h1] <= cmax) if h1.size > 0 else np.zeros(0, dtype=bool)
+        h0_kept = h0[keep0]
+        h1_kept = h1[keep1]
+
+    h0_stats = {"mean_hardness": float("nan"), "mean_repeat": float("nan")}
+    h1_stats = {"mean_hardness": float("nan"), "mean_repeat": float("nan")}
+    if use_hardness_weighting:
+        h0_out, h0_stats = _repeat_train_indices_by_hardness(
+            h0_kept,
+            pair_cosine=cos,
+            for_h0=True,
+            gamma=hardness_gamma,
+            extra_repeats=hardness_extra_repeats,
+        )
+        h1_out, h1_stats = _repeat_train_indices_by_hardness(
+            h1_kept,
+            pair_cosine=cos,
+            for_h0=False,
+            gamma=hardness_gamma,
+            extra_repeats=hardness_extra_repeats,
+        )
+        mode = "hardness_weighting"
+    else:
+        h0_out = h0_kept
+        h1_out = h1_kept
+        mode = "band_filter" if band_active else "none"
+
+    h0_before = int(h0.size)
+    h1_before = int(h1.size)
+    h0_kept_n = int(h0_kept.size)
+    h1_kept_n = int(h1_kept.size)
+    h0_eff_n = int(h0_out.size)
+    h1_eff_n = int(h1_out.size)
+
+    stats: Dict[str, Any] = {
+        "mode": mode,
+        "cosine_min": float(cmin) if band_active else None,
+        "cosine_max": float(cmax) if band_active else None,
+        "h0_before": h0_before,
+        "h1_before": h1_before,
+        "h0_kept_unique": h0_kept_n,
+        "h1_kept_unique": h1_kept_n,
+        "h0_after_effective": h0_eff_n,
+        "h1_after_effective": h1_eff_n,
+        "class1_ratio_before": _class1_ratio(h0_before, h1_before),
+        "class1_ratio_kept": _class1_ratio(h0_kept_n, h1_kept_n),
+        "class1_ratio_effective": _class1_ratio(h0_eff_n, h1_eff_n),
+        "h0_keep_rate": float(h0_kept_n / h0_before) if h0_before > 0 else float("nan"),
+        "h1_keep_rate": float(h1_kept_n / h1_before) if h1_before > 0 else float("nan"),
+        "h0_mean_hardness": float(h0_stats["mean_hardness"]),
+        "h1_mean_hardness": float(h1_stats["mean_hardness"]),
+        "h0_mean_repeat": float(h0_stats["mean_repeat"]),
+        "h1_mean_repeat": float(h1_stats["mean_repeat"]),
+        "hardness_gamma": float(hardness_gamma) if use_hardness_weighting else None,
+        "hardness_extra_repeats": int(hardness_extra_repeats) if use_hardness_weighting else None,
+    }
+    return h0_out.astype(np.int64, copy=False), h1_out.astype(np.int64, copy=False), stats
+
+
+def _apply_train_cosine_policy_global(
+    gs: GlobalSplit,
+    *,
+    pair_cosine: np.ndarray,
+    cosine_min: Optional[float],
+    cosine_max: Optional[float],
+    use_hardness_weighting: bool,
+    hardness_gamma: float,
+    hardness_extra_repeats: int,
+) -> tuple[GlobalSplit, Dict[str, Any]]:
+    h0_train, h1_train, stats = _apply_train_cosine_policy_to_indices(
+        gs.H0_train,
+        gs.H1_train,
+        pair_cosine=pair_cosine,
+        cosine_min=cosine_min,
+        cosine_max=cosine_max,
+        use_hardness_weighting=use_hardness_weighting,
+        hardness_gamma=hardness_gamma,
+        hardness_extra_repeats=hardness_extra_repeats,
+    )
+    out = GlobalSplit(
+        H0_train=h0_train,
+        H1_train=h1_train,
+        H0_calib=gs.H0_calib,
+        H1_calib=gs.H1_calib,
+        H0_eval=gs.H0_eval,
+        H1_eval=gs.H1_eval,
+    )
+    return out, stats
+
+
+def _apply_train_cosine_policy_regions(
+    splits: List[Any],
+    *,
+    pair_cosine: np.ndarray,
+    cosine_min: Optional[float],
+    cosine_max: Optional[float],
+    use_hardness_weighting: bool,
+    hardness_gamma: float,
+    hardness_extra_repeats: int,
+) -> tuple[List[Any], Dict[str, Any]]:
+    out: List[Any] = []
+    agg = {
+        "h0_before": 0,
+        "h1_before": 0,
+        "h0_kept_unique": 0,
+        "h1_kept_unique": 0,
+        "h0_after_effective": 0,
+        "h1_after_effective": 0,
+    }
+
+    h0_hard_num = 0.0
+    h0_hard_den = 0
+    h1_hard_num = 0.0
+    h1_hard_den = 0
+    h0_repeat_num = 0.0
+    h0_repeat_den = 0
+    h1_repeat_num = 0.0
+    h1_repeat_den = 0
+
+    for s in splits:
+        h0_train_new, h1_train_new, stats = _apply_train_cosine_policy_to_indices(
+            s.H0_train,
+            s.H1_train,
+            pair_cosine=pair_cosine,
+            cosine_min=cosine_min,
+            cosine_max=cosine_max,
+            use_hardness_weighting=use_hardness_weighting,
+            hardness_gamma=hardness_gamma,
+            hardness_extra_repeats=hardness_extra_repeats,
+        )
+
+        agg["h0_before"] += int(stats["h0_before"])
+        agg["h1_before"] += int(stats["h1_before"])
+        agg["h0_kept_unique"] += int(stats["h0_kept_unique"])
+        agg["h1_kept_unique"] += int(stats["h1_kept_unique"])
+        agg["h0_after_effective"] += int(stats["h0_after_effective"])
+        agg["h1_after_effective"] += int(stats["h1_after_effective"])
+
+        n0 = int(stats["h0_kept_unique"])
+        n1 = int(stats["h1_kept_unique"])
+        if np.isfinite(float(stats["h0_mean_hardness"])) and n0 > 0:
+            h0_hard_num += float(stats["h0_mean_hardness"]) * n0
+            h0_hard_den += n0
+        if np.isfinite(float(stats["h1_mean_hardness"])) and n1 > 0:
+            h1_hard_num += float(stats["h1_mean_hardness"]) * n1
+            h1_hard_den += n1
+        if np.isfinite(float(stats["h0_mean_repeat"])) and n0 > 0:
+            h0_repeat_num += float(stats["h0_mean_repeat"]) * n0
+            h0_repeat_den += n0
+        if np.isfinite(float(stats["h1_mean_repeat"])) and n1 > 0:
+            h1_repeat_num += float(stats["h1_mean_repeat"]) * n1
+            h1_repeat_den += n1
+
+        out.append(
+            type(s)(
+                rid=int(s.rid),
+                H0_train=h0_train_new,
+                H1_train=h1_train_new,
+                H0_calib=s.H0_calib,
+                H1_calib=s.H1_calib,
+                H0_eval=s.H0_eval,
+                H1_eval=s.H1_eval,
+            )
+        )
+
+    band_active = cosine_min is not None or cosine_max is not None
+    mode = "hardness_weighting" if use_hardness_weighting else ("band_filter" if band_active else "none")
+    stats_out: Dict[str, Any] = {
+        "mode": mode,
+        "cosine_min": float(cosine_min) if cosine_min is not None else (None if not band_active else -1.0),
+        "cosine_max": float(cosine_max) if cosine_max is not None else (None if not band_active else 1.0),
+        "h0_before": int(agg["h0_before"]),
+        "h1_before": int(agg["h1_before"]),
+        "h0_kept_unique": int(agg["h0_kept_unique"]),
+        "h1_kept_unique": int(agg["h1_kept_unique"]),
+        "h0_after_effective": int(agg["h0_after_effective"]),
+        "h1_after_effective": int(agg["h1_after_effective"]),
+        "class1_ratio_before": _class1_ratio(int(agg["h0_before"]), int(agg["h1_before"])),
+        "class1_ratio_kept": _class1_ratio(int(agg["h0_kept_unique"]), int(agg["h1_kept_unique"])),
+        "class1_ratio_effective": _class1_ratio(int(agg["h0_after_effective"]), int(agg["h1_after_effective"])),
+        "h0_keep_rate": float(agg["h0_kept_unique"] / agg["h0_before"]) if agg["h0_before"] > 0 else float("nan"),
+        "h1_keep_rate": float(agg["h1_kept_unique"] / agg["h1_before"]) if agg["h1_before"] > 0 else float("nan"),
+        "h0_mean_hardness": (h0_hard_num / h0_hard_den) if h0_hard_den > 0 else float("nan"),
+        "h1_mean_hardness": (h1_hard_num / h1_hard_den) if h1_hard_den > 0 else float("nan"),
+        "h0_mean_repeat": (h0_repeat_num / h0_repeat_den) if h0_repeat_den > 0 else float("nan"),
+        "h1_mean_repeat": (h1_repeat_num / h1_repeat_den) if h1_repeat_den > 0 else float("nan"),
+        "hardness_gamma": float(hardness_gamma) if use_hardness_weighting else None,
+        "hardness_extra_repeats": int(hardness_extra_repeats) if use_hardness_weighting else None,
+    }
+    return out, stats_out
+
+
+def _log_train_cosine_policy_stats(stats: Dict[str, Any]) -> None:
+    mode = str(stats.get("mode", "none"))
+    if mode == "none":
+        return
+
+    print(
+        "  train_cosine_policy: "
+        f"mode={mode} "
+        f"kept_unique(n0={int(stats.get('h0_kept_unique', 0))}, n1={int(stats.get('h1_kept_unique', 0))}, "
+        f"h1_ratio={float(stats.get('class1_ratio_kept', float('nan'))):.4f}) "
+        f"effective_train(n0={int(stats.get('h0_after_effective', 0))}, n1={int(stats.get('h1_after_effective', 0))}, "
+        f"h1_ratio={float(stats.get('class1_ratio_effective', float('nan'))):.4f})"
+    )
+
+    if mode == "band_filter":
+        print(
+            "    cosine_band: "
+            f"[{float(stats.get('cosine_min', -1.0)):.4f}, {float(stats.get('cosine_max', 1.0)):.4f}] "
+            f"keep_rate(n0={float(stats.get('h0_keep_rate', float('nan'))):.4f}, "
+            f"n1={float(stats.get('h1_keep_rate', float('nan'))):.4f})"
+        )
+
+    if mode == "hardness_weighting":
+        print(
+            "    hardness_weighting: "
+            f"gamma={float(stats.get('hardness_gamma', 1.0)):.3f} "
+            f"extra_repeats={int(stats.get('hardness_extra_repeats', 0))} "
+            f"mean_repeat(n0={float(stats.get('h0_mean_repeat', float('nan'))):.3f}, "
+            f"n1={float(stats.get('h1_mean_repeat', float('nan'))):.3f})"
+        )
 
 
 def _print_matched_comparison(rows: List[Dict[str, Any]]) -> None:
@@ -774,6 +1081,681 @@ def _build_ocats_comparison_rows(
     return out
 
 
+def _tiny_mlp_hidden_layers(args: argparse.Namespace) -> tuple[int, ...]:
+    hidden_dim = int(max(1, getattr(args, "tiny_mlp_hidden_dim", 16)))
+    n_layers = int(max(1, getattr(args, "tiny_mlp_n_layers", 1)))
+    return tuple(hidden_dim for _ in range(n_layers))
+
+
+def _ensemble_config_from_args(args: argparse.Namespace) -> Any:
+    from np_bench.methods.weighted_ensemble import EnsembleConfig
+
+    return EnsembleConfig(
+        alpha=float(args.alpha),
+        ridge=float(getattr(args, "ensemble_ridge", 1e-3)),
+        standardize=bool(getattr(args, "ensemble_standardize", False)),
+        nonneg_simplex=bool(getattr(args, "ensemble_nonneg_simplex", True)),
+        meta_frac=float(getattr(args, "ensemble_meta_frac", 0.30)),
+        tpr_tie_tol=float(getattr(args, "ensemble_tpr_tie_tol", 1e-4)),
+        tie_break_entropy=bool(getattr(args, "ensemble_tie_break_entropy", True)),
+    )
+
+
+def _build_ensemble_judges(args: argparse.Namespace, *, use_precomputed_cosine: bool, has_xgb: bool) -> List[Any]:
+    from np_bench.methods.cosine import CosineMethod
+    from np_bench.methods.lda import LDAMethod
+    from np_bench.methods.tiny_mlp import TinyMLPMethod
+
+    judges: List[Any] = []
+    if use_precomputed_cosine:
+        from np_bench.methods.precomputed_cosine import PrecomputedCosineMethod
+        judges.append(PrecomputedCosineMethod())
+    else:
+        judges.append(CosineMethod())
+
+    # try:
+    #     from np_bench.methods.whitened_cosine import WhitenedCosineMethod
+    #     judges.append(
+    #         WhitenedCosineMethod(
+    #             abs_eps=float(getattr(args, "pca_whiten_abs_eps", 1e-6)),
+    #             rel_eps=float(getattr(args, "pca_whiten_rel_eps", 1e-6)),
+    #             max_rank=getattr(args, "pca_whiten_max_rank", 128),
+    #             rank_mode=str(getattr(args, "pca_whiten_rank_mode", "explained_variance")),
+    #             explained_variance=float(getattr(args, "pca_whiten_explained_variance", 0.99)),
+    #             norm_eps=float(getattr(args, "pca_whiten_norm_eps", 1e-12)),
+    #         )
+    #     )
+    # except Exception:
+    #     pass
+
+    if has_xgb:
+        try:
+            from np_bench.methods.xgboost import XGBoostLightMethod
+            judges.append(
+                XGBoostLightMethod(
+                    n_estimators=int(getattr(args, "xgb_n_estimators", 30)),
+                    max_depth=int(getattr(args, "xgb_max_depth", 3)),
+                    learning_rate=float(getattr(args, "xgb_learning_rate", 0.1)),
+                    subsample=float(getattr(args, "xgb_subsample", 1.0)),
+                    colsample_bytree=float(getattr(args, "xgb_colsample_bytree", 1.0)),
+                    min_child_weight=float(getattr(args, "xgb_min_child_weight", 1.0)),
+                    gamma=float(getattr(args, "xgb_gamma", 0.0)),
+                    reg_alpha=float(getattr(args, "xgb_reg_alpha", 0.0)),
+                    reg_lambda=float(getattr(args, "xgb_reg_lambda", 1.0)),
+                )
+            )
+        except Exception:
+            pass
+
+    # judges.append(
+    #     TinyMLPMethod(
+    #         hidden_layer_sizes=_tiny_mlp_hidden_layers(args),
+    #         activation=str(getattr(args, "tiny_mlp_activation", "relu")),
+    #         alpha=float(getattr(args, "tiny_mlp_alpha", 0.001)),
+    #         learning_rate_init=float(getattr(args, "tiny_mlp_learning_rate_init", 0.001)),
+    #         max_iter=int(getattr(args, "tiny_mlp_max_iter", 800)),
+    #         early_stopping=bool(getattr(args, "tiny_mlp_early_stopping", False)),
+    #     )
+    # )
+    judges.append(
+        LDAMethod(
+            solver=str(getattr(args, "lda_solver", "lsqr")),
+            shrinkage=getattr(args, "lda_shrinkage", "auto"),
+            tol=float(getattr(args, "lda_tol", 1e-4)),
+        )
+    )
+    return judges
+
+
+def _build_configured_methods(
+    args: argparse.Namespace,
+    *,
+    X_cos: Optional[np.ndarray],
+    X_text: Optional[np.ndarray],
+    quiet: bool = False,
+) -> Dict[str, Any]:
+    methods = build_methods()
+    has_xgb = "XGBoost" in methods
+    use_precomputed_cosine = bool(args.hadamard_preprocess and X_cos is not None)
+
+    if use_precomputed_cosine:
+        try:
+            from np_bench.methods.precomputed_cosine import PrecomputedCosineMethod
+            methods["Cosine"] = PrecomputedCosineMethod()
+            if not quiet:
+                print("[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)")
+        except Exception as exc:
+            if not quiet:
+                print(f"[WARN] Could not route Cosine baseline to PrecomputedCosine: {exc}")
+
+    try:
+        from np_bench.methods.whitened_cosine import WhitenedCosineMethod
+        methods["PCAWhitenedCosine"] = WhitenedCosineMethod(
+            abs_eps=float(getattr(args, "pca_whiten_abs_eps", 1e-6)),
+            rel_eps=float(getattr(args, "pca_whiten_rel_eps", 1e-6)),
+            max_rank=getattr(args, "pca_whiten_max_rank", 128),
+            rank_mode=str(getattr(args, "pca_whiten_rank_mode", "explained_variance")),
+            explained_variance=float(getattr(args, "pca_whiten_explained_variance", 0.99)),
+            norm_eps=float(getattr(args, "pca_whiten_norm_eps", 1e-12)),
+        )
+    except Exception:
+        pass
+
+    if has_xgb:
+        try:
+            from np_bench.methods.xgboost import XGBoostLightMethod
+            methods["XGBoost"] = XGBoostLightMethod(
+                n_estimators=int(getattr(args, "xgb_n_estimators", 30)),
+                max_depth=int(getattr(args, "xgb_max_depth", 3)),
+                learning_rate=float(getattr(args, "xgb_learning_rate", 0.1)),
+                subsample=float(getattr(args, "xgb_subsample", 1.0)),
+                colsample_bytree=float(getattr(args, "xgb_colsample_bytree", 1.0)),
+                min_child_weight=float(getattr(args, "xgb_min_child_weight", 1.0)),
+                gamma=float(getattr(args, "xgb_gamma", 0.0)),
+                reg_alpha=float(getattr(args, "xgb_reg_alpha", 0.0)),
+                reg_lambda=float(getattr(args, "xgb_reg_lambda", 1.0)),
+            )
+        except Exception as exc:
+            if not quiet:
+                print(f"[WARN] Could not configure XGBoost: {exc}")
+
+    try:
+        from np_bench.methods.tiny_mlp import TinyMLPMethod
+        methods["Tiny MLP"] = TinyMLPMethod(
+            hidden_layer_sizes=_tiny_mlp_hidden_layers(args),
+            activation=str(getattr(args, "tiny_mlp_activation", "relu")),
+            alpha=float(getattr(args, "tiny_mlp_alpha", 0.001)),
+            learning_rate_init=float(getattr(args, "tiny_mlp_learning_rate_init", 0.001)),
+            max_iter=int(getattr(args, "tiny_mlp_max_iter", 800)),
+            early_stopping=bool(getattr(args, "tiny_mlp_early_stopping", False)),
+        )
+    except Exception as exc:
+        if not quiet:
+            print(f"[WARN] Could not configure Tiny MLP: {exc}")
+
+    try:
+        from np_bench.methods.lda import LDAMethod
+        methods["LDA"] = LDAMethod(
+            solver=str(getattr(args, "lda_solver", "lsqr")),
+            shrinkage=getattr(args, "lda_shrinkage", "auto"),
+            tol=float(getattr(args, "lda_tol", 1e-4)),
+        )
+    except Exception as exc:
+        if not quiet:
+            print(f"[WARN] Could not configure LDA: {exc}")
+
+    try:
+        from np_bench.methods.weighted_ensemble import WeightedEnsembleMethod
+        methods["WeightedEnsemble"] = WeightedEnsembleMethod(
+            judges=_build_ensemble_judges(
+                args,
+                use_precomputed_cosine=use_precomputed_cosine,
+                has_xgb=has_xgb,
+            ),
+            config=_ensemble_config_from_args(args),
+        )
+        if use_precomputed_cosine and not quiet:
+            print("[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum")
+    except Exception as exc:
+        if not quiet:
+            print(f"[WARN] Could not configure WeightedEnsemble: {exc}")
+
+    try:
+        from np_bench.methods.stabilized_whitened_cosine import StabilizedWhitenedCosineMethod
+        methods["StabilizedWhitenedCosine"] = StabilizedWhitenedCosineMethod(
+            k=int(getattr(args, "swc_k", 64)),
+            shrinkage=float(getattr(args, "swc_shrinkage", 0.1)),
+            eps=float(getattr(args, "swc_eps", 1e-6)),
+            min_samples=int(getattr(args, "swc_min_samples", 200)),
+            fallback=bool(getattr(args, "swc_fallback", True)),
+            verbose=bool(getattr(args, "swc_verbose", False)),
+        )
+    except Exception:
+        pass
+
+    if args.cos_affine_calib:
+        try:
+            from np_bench.methods.cosine_affine_calib import CosineAffineCalibMethod
+            methods["CosineAffineCalib"] = CosineAffineCalibMethod()
+        except Exception as exc:
+            if not quiet:
+                print(f"[WARN] Could not load CosineAffineCalib: {exc}")
+
+    if args.precomputed_cosine:
+        try:
+            from np_bench.methods.precomputed_cosine import PrecomputedCosineMethod
+            methods["PrecomputedCosine"] = PrecomputedCosineMethod()
+        except Exception as exc:
+            if not quiet:
+                print(f"[WARN] Could not load PrecomputedCosine: {exc}")
+
+    if args.regional_weighted_ensemble:
+        try:
+            from np_bench.methods.regional_weighted_ensemble import (
+                RegionalEnsembleConfig,
+                RegionalWeightedEnsembleMethod,
+            )
+            judges = []
+            if "WeightedEnsemble" in methods and hasattr(methods["WeightedEnsemble"], "judges"):
+                judges = list(getattr(methods["WeightedEnsemble"], "judges", []))
+            if judges:
+                methods["RegionalWeightedEnsemble"] = RegionalWeightedEnsembleMethod(
+                    judges=judges,
+                    config=RegionalEnsembleConfig(
+                        alpha=float(args.alpha),
+                        ridge=float(getattr(args, "ensemble_ridge", 1e-3)),
+                        standardize=bool(getattr(args, "ensemble_standardize", False)),
+                        nonneg_simplex=bool(getattr(args, "ensemble_nonneg_simplex", True)),
+                        meta_frac=float(getattr(args, "ensemble_meta_frac", 0.30)),
+                        tpr_tie_tol=float(getattr(args, "ensemble_tpr_tie_tol", 1e-4)),
+                        tie_break_entropy=bool(getattr(args, "ensemble_tie_break_entropy", True)),
+                        k_shrink=float(args.rwe_k_shrink),
+                        min_region_h0=int(args.rwe_min_region_h0),
+                        min_region_h1=int(args.rwe_min_region_h1),
+                    ),
+                )
+                if use_precomputed_cosine and not quiet:
+                    print("[INFO] RegionalWeightedEnsemble Cosine judge routed to direct Hadamard sum")
+            elif not quiet:
+                print("[WARN] Could not initialize RegionalWeightedEnsemble: no base judges found")
+        except Exception as exc:
+            if not quiet:
+                print(f"[WARN] Could not load RegionalWeightedEnsemble: {exc}")
+
+    if args.enable_bge_reranker:
+        if X_text is None:
+            if not quiet:
+                print("[WARN] --enable_bge_reranker set but no text pairs were resolved; skipping method")
+        else:
+            try:
+                from np_bench.methods.bge_reranker import BGERerankerMethod
+                methods["BGE Reranker"] = BGERerankerMethod(
+                    model_name=args.bge_model_name,
+                    batch_size=int(args.bge_batch_size),
+                    max_length=int(args.bge_max_length),
+                    normalize_scores=bool(args.bge_normalize_scores),
+                    backend=args.bge_backend,
+                )
+            except Exception as exc:
+                if not quiet:
+                    print(f"[WARN] Could not load BGE Reranker method: {exc}")
+
+    return methods
+
+
+def _evaluate_global_candidate(
+    candidate_args: argparse.Namespace,
+    *,
+    gs: GlobalSplit,
+    X_main: np.ndarray,
+    X_cos: Optional[np.ndarray],
+    X_text: Optional[np.ndarray],
+    y: np.ndarray,
+    region_id: np.ndarray,
+    h0_monitor_idx: np.ndarray,
+    h1_monitor_idx: np.ndarray,
+    trial: int,
+    seed: int,
+    region_key: str,
+    selected_ocats_methods: List[str],
+    lambda_values: List[float],
+    run_ocats_baselines: bool,
+    include_ocats_in_comparison: bool,
+    suppress_output: bool = True,
+) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    failures_local: Dict[str, List[str]] = defaultdict(list)
+
+    h0_train_idx_fit = np.asarray(gs.H0_train, dtype=np.int64).reshape(-1)
+    h1_train_idx_fit = np.asarray(gs.H1_train, dtype=np.int64).reshape(-1)
+    h0_train_idx_unique = np.unique(h0_train_idx_fit) if h0_train_idx_fit.size > 0 else h0_train_idx_fit
+    h1_train_idx_unique = np.unique(h1_train_idx_fit) if h1_train_idx_fit.size > 0 else h1_train_idx_fit
+
+    H0_train = X_main[h0_train_idx_fit]
+    H1_train = X_main[h1_train_idx_fit]
+    H0_calib_pure = X_main[gs.H0_calib]
+    H1_calib_pure = X_main[gs.H1_calib]
+    H0_calib_eff = X_main[np.concatenate([h0_train_idx_unique, gs.H0_calib])] \
+        if h0_train_idx_unique.size > 0 else X_main[gs.H0_calib]
+    H1_calib_eff = X_main[np.concatenate([h1_train_idx_unique, gs.H1_calib])] \
+        if h1_train_idx_unique.size > 0 else X_main[gs.H1_calib]
+
+    H0_train_cos = X_cos[h0_train_idx_fit] if X_cos is not None else None
+    H1_train_cos = X_cos[h1_train_idx_fit] if X_cos is not None else None
+    if X_cos is not None:
+        H0_calib_pure_cos = X_cos[gs.H0_calib]
+        H1_calib_pure_cos = X_cos[gs.H1_calib]
+        H0_calib_eff_cos = X_cos[np.concatenate([h0_train_idx_unique, gs.H0_calib])] \
+            if h0_train_idx_unique.size > 0 else X_cos[gs.H0_calib]
+        H1_calib_eff_cos = X_cos[np.concatenate([h1_train_idx_unique, gs.H1_calib])] \
+            if h1_train_idx_unique.size > 0 else X_cos[gs.H1_calib]
+    else:
+        H0_calib_pure_cos = None
+        H1_calib_pure_cos = None
+        H0_calib_eff_cos = None
+        H1_calib_eff_cos = None
+
+    if X_text is not None:
+        H0_train_text = X_text[h0_train_idx_fit]
+        H1_train_text = X_text[h1_train_idx_fit]
+        H0_calib_eff_text = X_text[np.concatenate([h0_train_idx_unique, gs.H0_calib])] \
+            if h0_train_idx_unique.size > 0 else X_text[gs.H0_calib]
+        H1_calib_eff_text = X_text[np.concatenate([h1_train_idx_unique, gs.H1_calib])] \
+            if h1_train_idx_unique.size > 0 else X_text[gs.H1_calib]
+    else:
+        H0_train_text = None
+        H1_train_text = None
+        H0_calib_eff_text = None
+        H1_calib_eff_text = None
+
+    if H0_calib_eff.shape[0] == 0 or H1_calib_eff.shape[0] == 0:
+        return [], {"reason": "empty_calib_eff"}
+
+    v0 = np.var(H0_calib_eff, axis=0)
+    v1 = np.var(H1_calib_eff, axis=0)
+    weights = (v1 / (v0 + 1e-12)).astype(np.float32, copy=False)
+
+    stream = io.StringIO()
+    cm = contextlib.redirect_stdout(stream) if suppress_output else contextlib.nullcontext()
+    with cm:
+        methods = _build_configured_methods(candidate_args, X_cos=X_cos, X_text=X_text, quiet=True)
+        method_names = list(methods.keys())
+
+        online_method = None
+        if candidate_args.enable_online_stopping:
+            online_method, _, _ = _run_online_stopping(
+                X_main,
+                y,
+                h0_train_idx=gs.H0_train,
+                h1_train_idx=gs.H1_train,
+                h0_calib_idx=gs.H0_calib,
+                h0_monitor_idx=h0_monitor_idx,
+                h1_monitor_idx=h1_monitor_idx,
+                alpha=candidate_args.alpha,
+                tie_mode=candidate_args.tie_mode,
+                tau_guardrail=candidate_args.tau_guardrail,
+                tau_guardrail_delta=candidate_args.tau_guardrail_delta,
+                seed=seed,
+                args=candidate_args,
+            )
+            if online_method is not None:
+                methods["Online(refit)"] = online_method
+                method_names.append("Online(refit)")
+
+        fit_all_methods(
+            methods,
+            H0_train=H0_train,
+            H1_train=H1_train,
+            H0_calib_eff=H0_calib_eff,
+            H1_calib_eff=H1_calib_eff,
+            H0_calib_pure=H0_calib_pure,
+            H1_calib_pure=H1_calib_pure,
+            H0_train_cos=H0_train_cos,
+            H1_train_cos=H1_train_cos,
+            H0_calib_eff_cos=H0_calib_eff_cos,
+            H1_calib_eff_cos=H1_calib_eff_cos,
+            H0_train_text=H0_train_text,
+            H1_train_text=H1_train_text,
+            H0_calib_eff_text=H0_calib_eff_text,
+            H1_calib_eff_text=H1_calib_eff_text,
+            H0_calib_pure_cos=H0_calib_pure_cos,
+            H1_calib_pure_cos=H1_calib_pure_cos,
+            H0_calib_region_ids=region_id[gs.H0_calib],
+            H1_calib_region_ids=region_id[gs.H1_calib],
+            tie_mode=candidate_args.tie_mode,
+            tau_guardrail=candidate_args.tau_guardrail,
+            tau_guardrail_delta=candidate_args.tau_guardrail_delta,
+            weights=weights,
+            seed=seed,
+            alpha=candidate_args.alpha,
+            trial=trial,
+            failures=failures_local,
+            fit_context="optuna_global_validation",
+        )
+
+        rows = evaluate_methods_global(
+            methods,
+            method_names,
+            gs,
+            X_main=X_main,
+            X_cos=X_cos,
+            X_text=X_text,
+            alpha=candidate_args.alpha,
+            tie_mode=candidate_args.tie_mode,
+            tau_guardrail=candidate_args.tau_guardrail,
+            tau_guardrail_delta=candidate_args.tau_guardrail_delta,
+            trial=trial,
+            seed=seed,
+            region_key=region_key,
+            region_id=region_id,
+            failures=failures_local,
+        )
+
+        if run_ocats_baselines:
+            train_idx_global = np.concatenate([gs.H0_train, gs.H1_train])
+            calib_idx_global = np.concatenate([gs.H0_calib, gs.H1_calib])
+            eval_idx_global = np.concatenate([gs.H0_eval, gs.H1_eval])
+            oc_out = _run_ocats_for_split(
+                X_main=X_main,
+                y=y,
+                train_idx=train_idx_global,
+                calib_idx=calib_idx_global,
+                eval_idx=eval_idx_global,
+                trial=trial,
+                seed=seed,
+                region_key=region_key,
+                tau_mode="global",
+                comparison_scope="optuna_validation",
+                args=candidate_args,
+                selected_methods=selected_ocats_methods,
+                lambda_values=lambda_values,
+            )
+            if include_ocats_in_comparison:
+                rows.extend(
+                    _build_ocats_comparison_rows(
+                        oc_out["trial_rows"],
+                        shared_regions=1,
+                        dropped_regions_for_comparability=0,
+                        alpha=float(candidate_args.alpha),
+                    )
+                )
+
+    return rows, {"failures": sum(len(v) for v in failures_local.values())}
+
+
+def _evaluate_local_candidate(
+    candidate_args: argparse.Namespace,
+    *,
+    splits: List[RegionSplit],
+    X_main: np.ndarray,
+    X_cos: Optional[np.ndarray],
+    X_text: Optional[np.ndarray],
+    y: np.ndarray,
+    region_id: np.ndarray,
+    X_anchor_source: np.ndarray,
+    h0_monitor_idx: np.ndarray,
+    h1_monitor_idx: np.ndarray,
+    trial: int,
+    seed: int,
+    region_key: str,
+    selected_ocats_methods: List[str],
+    lambda_values: List[float],
+    run_ocats_baselines: bool,
+    include_ocats_in_comparison: bool,
+    suppress_output: bool = True,
+) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    failures_local: Dict[str, List[str]] = defaultdict(list)
+
+    tau_cluster_id_by_rid: Optional[Dict[int, int]] = None
+    if candidate_args.tau_mode == "cluster_local":
+        tau_cluster_id_by_rid = _build_tau_cluster_map(
+            splits=splits,
+            X_anchor_source=X_anchor_source,
+            region_id=region_id,
+            anchor_strategy=candidate_args.hadamard_anchor_strategy,
+            n_clusters=max(1, int(candidate_args.tau_cluster_k)),
+            seed=seed,
+        )
+        if not tau_cluster_id_by_rid:
+            return [], {"reason": "empty_tau_cluster_map"}
+
+    h0_train_idx_list = [s.H0_train for s in splits if s.H0_train.size > 0]
+    h1_train_idx_list = [s.H1_train for s in splits if s.H1_train.size > 0]
+    h0_train_idx_fit = _concat_indices(h0_train_idx_list)
+    h1_train_idx_fit = _concat_indices(h1_train_idx_list)
+    h0_train_idx_unique = np.unique(h0_train_idx_fit) if h0_train_idx_fit.size > 0 else h0_train_idx_fit
+    h1_train_idx_unique = np.unique(h1_train_idx_fit) if h1_train_idx_fit.size > 0 else h1_train_idx_fit
+
+    H0_train = X_main[h0_train_idx_fit] if h0_train_idx_fit.size > 0 else X_main[:0]
+    H1_train = X_main[h1_train_idx_fit] if h1_train_idx_fit.size > 0 else X_main[:0]
+
+    h0_calib_list = [s.H0_calib for s in splits if s.H0_calib.size > 0]
+    h1_calib_list = [s.H1_calib for s in splits if s.H1_calib.size > 0]
+    h0_calib_idx = _concat_indices(h0_calib_list)
+    h1_calib_idx = _concat_indices(h1_calib_list)
+    H0_calib = X_main[h0_calib_idx] if h0_calib_idx.size > 0 else X_main[:0]
+    H1_calib = X_main[h1_calib_idx] if h1_calib_idx.size > 0 else X_main[:0]
+    H0_calib_eff = X_main[np.concatenate([h0_train_idx_unique, h0_calib_idx])] \
+        if h0_train_idx_unique.size > 0 else H0_calib
+    H1_calib_eff = X_main[np.concatenate([h1_train_idx_unique, h1_calib_idx])] \
+        if h1_train_idx_unique.size > 0 else H1_calib
+
+    if X_cos is not None:
+        H0_train_cos = X_cos[h0_train_idx_fit] if h0_train_idx_fit.size > 0 else X_cos[:0]
+        H1_train_cos = X_cos[h1_train_idx_fit] if h1_train_idx_fit.size > 0 else X_cos[:0]
+        H0_calib_cos = X_cos[h0_calib_idx] if h0_calib_idx.size > 0 else X_cos[:0]
+        H1_calib_cos = X_cos[h1_calib_idx] if h1_calib_idx.size > 0 else X_cos[:0]
+        H0_calib_eff_cos = X_cos[np.concatenate([h0_train_idx_unique, h0_calib_idx])] \
+            if h0_train_idx_unique.size > 0 else H0_calib_cos
+        H1_calib_eff_cos = X_cos[np.concatenate([h1_train_idx_unique, h1_calib_idx])] \
+            if h1_train_idx_unique.size > 0 else H1_calib_cos
+    else:
+        H0_train_cos = None
+        H1_train_cos = None
+        H0_calib_cos = None
+        H1_calib_cos = None
+        H0_calib_eff_cos = None
+        H1_calib_eff_cos = None
+
+    if X_text is not None:
+        H0_train_text = X_text[h0_train_idx_fit] if h0_train_idx_fit.size > 0 else X_text[:0]
+        H1_train_text = X_text[h1_train_idx_fit] if h1_train_idx_fit.size > 0 else X_text[:0]
+        H0_calib_text = X_text[h0_calib_idx] if h0_calib_idx.size > 0 else X_text[:0]
+        H1_calib_text = X_text[h1_calib_idx] if h1_calib_idx.size > 0 else X_text[:0]
+        H0_calib_eff_text = X_text[np.concatenate([h0_train_idx_unique, h0_calib_idx])] \
+            if h0_train_idx_unique.size > 0 else H0_calib_text
+        H1_calib_eff_text = X_text[np.concatenate([h1_train_idx_unique, h1_calib_idx])] \
+            if h1_train_idx_unique.size > 0 else H1_calib_text
+    else:
+        H0_train_text = None
+        H1_train_text = None
+        H0_calib_eff_text = None
+        H1_calib_eff_text = None
+
+    if H0_calib_eff.shape[0] == 0 or H1_calib_eff.shape[0] == 0:
+        return [], {"reason": "empty_calib_eff"}
+
+    v0 = np.var(H0_calib_eff, axis=0)
+    v1 = np.var(H1_calib_eff, axis=0)
+    weights = (v1 / (v0 + 1e-12)).astype(np.float32, copy=False)
+
+    stream = io.StringIO()
+    cm = contextlib.redirect_stdout(stream) if suppress_output else contextlib.nullcontext()
+    with cm:
+        methods = _build_configured_methods(candidate_args, X_cos=X_cos, X_text=X_text, quiet=True)
+        method_names = list(methods.keys())
+
+        online_method = None
+        if candidate_args.enable_online_stopping:
+            online_method, _, _ = _run_online_stopping(
+                X_main,
+                y,
+                h0_train_idx=_concat_indices(h0_train_idx_list),
+                h1_train_idx=_concat_indices(h1_train_idx_list),
+                h0_calib_idx=_concat_indices(h0_calib_list),
+                h0_monitor_idx=h0_monitor_idx,
+                h1_monitor_idx=h1_monitor_idx,
+                alpha=candidate_args.alpha,
+                tie_mode=candidate_args.tie_mode,
+                tau_guardrail=candidate_args.tau_guardrail,
+                tau_guardrail_delta=candidate_args.tau_guardrail_delta,
+                seed=seed,
+                args=candidate_args,
+            )
+            if online_method is not None:
+                methods["Online(refit)"] = online_method
+                method_names.append("Online(refit)")
+
+        if candidate_args.local_fit_mode == "pooled":
+            fit_all_methods(
+                methods,
+                H0_train=H0_train,
+                H1_train=H1_train,
+                H0_calib_eff=H0_calib_eff,
+                H1_calib_eff=H1_calib_eff,
+                H0_calib_pure=H0_calib,
+                H1_calib_pure=H1_calib,
+                H0_train_cos=H0_train_cos,
+                H1_train_cos=H1_train_cos,
+                H0_calib_eff_cos=H0_calib_eff_cos,
+                H1_calib_eff_cos=H1_calib_eff_cos,
+                H0_calib_pure_cos=H0_calib_cos,
+                H1_calib_pure_cos=H1_calib_cos,
+                H0_calib_region_ids=(
+                    region_id[np.concatenate(h0_calib_list)] if h0_calib_list else np.array([], dtype=np.int64)
+                ),
+                H1_calib_region_ids=(
+                    region_id[np.concatenate(h1_calib_list)] if h1_calib_list else np.array([], dtype=np.int64)
+                ),
+                H0_train_text=H0_train_text,
+                H1_train_text=H1_train_text,
+                H0_calib_eff_text=H0_calib_eff_text,
+                H1_calib_eff_text=H1_calib_eff_text,
+                tie_mode=candidate_args.tie_mode,
+                tau_guardrail=candidate_args.tau_guardrail,
+                tau_guardrail_delta=candidate_args.tau_guardrail_delta,
+                weights=weights,
+                seed=seed,
+                alpha=candidate_args.alpha,
+                trial=trial,
+                failures=failures_local,
+                require_pure_calib_for_ensemble=True,
+                fit_context="optuna_local_validation",
+            )
+
+        local_eval_meta: Dict[str, Any] = {}
+        rows = evaluate_methods(
+            methods,
+            method_names,
+            splits,
+            X_main=X_main,
+            X_cos=X_cos,
+            X_text=X_text,
+            alpha=candidate_args.alpha,
+            tau_mode=candidate_args.tau_mode,
+            tie_mode=candidate_args.tie_mode,
+            tau_shrink=bool(candidate_args.tau_shrink),
+            tau_shrink_m=float(candidate_args.tau_shrink_m),
+            shrink_k=float(candidate_args.shrink_k),
+            tau_guardrail=candidate_args.tau_guardrail,
+            tau_guardrail_delta=float(candidate_args.tau_guardrail_delta),
+            swc_mode=candidate_args.swc_mode,
+            swc_cluster_n_clusters=int(candidate_args.swc_cluster_n_clusters),
+            cos_affine_grouping=candidate_args.cos_affine_grouping,
+            cos_affine_n_clusters=int(candidate_args.cos_affine_n_clusters),
+            local_fit_mode=candidate_args.local_fit_mode,
+            trial=trial,
+            seed=seed,
+            region_key=region_key,
+            h0_train_idx_list=h0_train_idx_list,
+            h1_train_idx_list=h1_train_idx_list,
+            h0_calib_list=h0_calib_list,
+            h1_calib_list=h1_calib_list,
+            H0_calib_eff=H0_calib_eff,
+            failures=failures_local,
+            tau_cluster_id_by_rid=tau_cluster_id_by_rid,
+            trial_meta=local_eval_meta,
+        )
+
+        if run_ocats_baselines:
+            tested_region_ids = [int(r) for r in local_eval_meta.get("tested_region_ids", [])]
+            ocats_rids = tested_region_ids if tested_region_ids else [int(s.rid) for s in splits]
+            gs_ocats = _build_global_split_from_local_regions(splits, ocats_rids)
+            if (
+                gs_ocats.H0_train.size > 0
+                and gs_ocats.H1_train.size > 0
+                and gs_ocats.H0_eval.size > 0
+                and gs_ocats.H1_eval.size > 0
+            ):
+                oc_out = _run_ocats_for_split(
+                    X_main=X_main,
+                    y=y,
+                    train_idx=np.concatenate([gs_ocats.H0_train, gs_ocats.H1_train]),
+                    calib_idx=np.concatenate([gs_ocats.H0_calib, gs_ocats.H1_calib]),
+                    eval_idx=np.concatenate([gs_ocats.H0_eval, gs_ocats.H1_eval]),
+                    trial=trial,
+                    seed=seed,
+                    region_key=region_key,
+                    tau_mode=candidate_args.tau_mode,
+                    comparison_scope="optuna_validation",
+                    args=candidate_args,
+                    selected_methods=selected_ocats_methods,
+                    lambda_values=lambda_values,
+                )
+                if include_ocats_in_comparison:
+                    shared_regions = int(rows[0].get("shared_regions", rows[0].get("ok_regions", len(ocats_rids)))) if rows else int(max(1, len(ocats_rids)))
+                    dropped_regions = int(rows[0].get("dropped_regions_for_comparability", 0)) if rows else 0
+                    rows.extend(
+                        _build_ocats_comparison_rows(
+                            oc_out["trial_rows"],
+                            shared_regions=shared_regions,
+                            dropped_regions_for_comparability=dropped_regions,
+                            alpha=float(candidate_args.alpha),
+                        )
+                    )
+
+    return rows, {"failures": sum(len(v) for v in failures_local.values())}
+
+
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(
         description="Region-local threshold benchmark with train/calib protocol."
@@ -887,6 +1869,95 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     )
     ap.add_argument("--ambiguous_cos_min", type=float, default=0.7)
     ap.add_argument("--ambiguous_cos_max", type=float, default=0.9)
+
+    # Train-only cosine policy (from raw pair embeddings x/y)
+    ap.add_argument(
+        "--train_cosine_min",
+        type=float,
+        default=None,
+        help="Optional train-only lower bound on raw pairwise cosine(x,y).",
+    )
+    ap.add_argument(
+        "--train_cosine_max",
+        type=float,
+        default=None,
+        help="Optional train-only upper bound on raw pairwise cosine(x,y).",
+    )
+    ap.add_argument(
+        "--train_hardness_weighting",
+        action="store_true",
+        default=False,
+        help=(
+            "Prefer non-destructive train weighting by repeating hard examples: "
+            "H0 high-cosine and H1 low-cosine receive larger effective weight."
+        ),
+    )
+    ap.add_argument(
+        "--train_hardness_gamma",
+        type=float,
+        default=1.0,
+        help="Hardness exponent for train weighting (larger means stronger emphasis on hard samples).",
+    )
+    ap.add_argument(
+        "--train_hardness_extra_repeats",
+        type=int,
+        default=2,
+        help="Maximum additional repeats per training sample in hardness-weighting mode.",
+    )
+    ap.add_argument(
+        "--train_pair_x_key",
+        type=str,
+        default=None,
+        help="Optional NPZ key for raw x embeddings used in train cosine policy.",
+    )
+    ap.add_argument(
+        "--train_pair_y_key",
+        type=str,
+        default=None,
+        help="Optional NPZ key for raw y embeddings used in train cosine policy.",
+    )
+
+    # Static scorer hyperparameters. Defaults preserve the previous hard-coded behavior.
+    ap.add_argument("--pca_whiten_abs_eps", type=float, default=1e-6)
+    ap.add_argument("--pca_whiten_rel_eps", type=float, default=1e-6)
+    ap.add_argument("--pca_whiten_max_rank", type=int, default=128)
+    ap.add_argument(
+        "--pca_whiten_rank_mode",
+        type=str,
+        default="explained_variance",
+        choices=["fixed", "explained_variance", "threshold"],
+    )
+    ap.add_argument("--pca_whiten_explained_variance", type=float, default=0.99)
+    ap.add_argument("--pca_whiten_norm_eps", type=float, default=1e-12)
+
+    ap.add_argument("--xgb_n_estimators", type=int, default=30)
+    ap.add_argument("--xgb_max_depth", type=int, default=3)
+    ap.add_argument("--xgb_learning_rate", type=float, default=0.1)
+    ap.add_argument("--xgb_subsample", type=float, default=1.0)
+    ap.add_argument("--xgb_colsample_bytree", type=float, default=1.0)
+    ap.add_argument("--xgb_min_child_weight", type=float, default=1.0)
+    ap.add_argument("--xgb_gamma", type=float, default=0.0)
+    ap.add_argument("--xgb_reg_alpha", type=float, default=0.0)
+    ap.add_argument("--xgb_reg_lambda", type=float, default=1.0)
+
+    ap.add_argument("--tiny_mlp_hidden_dim", type=int, default=16)
+    ap.add_argument("--tiny_mlp_n_layers", type=int, default=1)
+    ap.add_argument("--tiny_mlp_alpha", type=float, default=0.001)
+    ap.add_argument("--tiny_mlp_learning_rate_init", type=float, default=0.001)
+    ap.add_argument("--tiny_mlp_max_iter", type=int, default=800)
+    ap.add_argument("--tiny_mlp_activation", type=str, default="relu", choices=["relu", "tanh", "logistic"])
+    ap.add_argument("--tiny_mlp_early_stopping", action="store_true", default=False)
+
+    ap.add_argument("--lda_solver", type=str, default="lsqr", choices=["svd", "lsqr", "eigen"])
+    ap.add_argument("--lda_shrinkage", type=str, default="auto")
+    ap.add_argument("--lda_tol", type=float, default=1e-4)
+
+    ap.add_argument("--ensemble_ridge", type=float, default=1e-3)
+    ap.add_argument("--ensemble_standardize", action="store_true", default=False)
+    ap.add_argument("--ensemble_nonneg_simplex", type=lambda v: v.lower() in ("true", "1", "yes"), default=True)
+    ap.add_argument("--ensemble_meta_frac", type=float, default=0.30)
+    ap.add_argument("--ensemble_tpr_tie_tol", type=float, default=1e-4)
+    ap.add_argument("--ensemble_tie_break_entropy", type=lambda v: v.lower() in ("true", "1", "yes"), default=True)
 
     # OCaTS-style teacher-student comparison baselines (disabled by default)
     ap.add_argument("--enable_ocats_baselines", action="store_true", default=False)
@@ -1054,11 +2125,68 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     ap.add_argument("--online_init_h0", type=int, default=50)
     ap.add_argument("--online_init_h1", type=int, default=50)
 
+    # Optuna validation-only hyperparameter search.
+    ap.add_argument("--enable_optuna", action="store_true", default=False)
+    ap.add_argument("--optuna_trials", type=int, default=50)
+    ap.add_argument("--optuna_timeout", type=float, default=None)
+    ap.add_argument("--optuna_seed", type=int, default=None)
+    ap.add_argument("--optuna_val_frac", type=float, default=0.5)
+    ap.add_argument(
+        "--optuna_target_method",
+        type=str,
+        default="best_feasible",
+        help="Exact method name to optimize, or best_feasible/all to select the best validation row.",
+    )
+    ap.add_argument(
+        "--optuna_metric",
+        type=str,
+        default="micro_tpr",
+        choices=["micro_tpr", "macro_tpr", "utility"],
+    )
+    ap.add_argument("--optuna_fpr_penalty", type=float, default=5.0)
+    ap.add_argument("--optuna_storage", type=str, default=None)
+    ap.add_argument("--optuna_study_name", type=str, default=None)
+    ap.add_argument(
+        "--optuna_apply_best",
+        type=lambda v: v.lower() in ("true", "1", "yes"),
+        default=True,
+        help="Apply the best validation params before final test evaluation.",
+    )
+
     return ap.parse_args(argv)
 
 
 def main(argv: Optional[List[str]] = None) -> None:
     args = parse_args(argv)
+
+    train_cosine_band_active = args.train_cosine_min is not None or args.train_cosine_max is not None
+    train_cosine_policy_active = bool(args.train_hardness_weighting or train_cosine_band_active)
+
+    if args.train_hardness_weighting and train_cosine_band_active:
+        raise ValueError(
+            "Use either hardness weighting (--train_hardness_weighting) or cosine-band filtering "
+            "(--train_cosine_min/--train_cosine_max), not both."
+        )
+    if args.train_hardness_gamma <= 0.0:
+        raise ValueError("--train_hardness_gamma must be > 0")
+    if args.train_hardness_extra_repeats < 0:
+        raise ValueError("--train_hardness_extra_repeats must be >= 0")
+    if (args.train_pair_x_key is None) != (args.train_pair_y_key is None):
+        raise ValueError("Provide both --train_pair_x_key and --train_pair_y_key together")
+    if args.train_cosine_min is not None and not (-1.0 <= float(args.train_cosine_min) <= 1.0):
+        raise ValueError("--train_cosine_min must lie in [-1, 1]")
+    if args.train_cosine_max is not None and not (-1.0 <= float(args.train_cosine_max) <= 1.0):
+        raise ValueError("--train_cosine_max must lie in [-1, 1]")
+    if train_cosine_band_active:
+        cmin = -1.0 if args.train_cosine_min is None else float(args.train_cosine_min)
+        cmax = 1.0 if args.train_cosine_max is None else float(args.train_cosine_max)
+        if cmin > cmax:
+            raise ValueError(f"Invalid train cosine band: min={cmin} > max={cmax}")
+    if args.enable_optuna:
+        if int(args.optuna_trials) <= 0:
+            raise ValueError("--optuna_trials must be > 0 when --enable_optuna is set")
+        if not (0.05 <= float(args.optuna_val_frac) <= 0.95):
+            raise ValueError("--optuna_val_frac must lie in [0.05, 0.95]")
 
     if args.local_fit_mode == "per_region":
         if args.tau_mode != "local":
@@ -1085,6 +2213,25 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     feat_key, X_main, X_cos = resolve_features(ds)
     X_anchor_source = np.asarray(X_main, dtype=np.float32)
+
+    train_pair_cosine_source: Optional[str] = None
+    train_pair_cosine: Optional[np.ndarray] = None
+    if train_cosine_policy_active:
+        train_pair_cosine_source, train_pair_cosine = resolve_train_pairwise_cosine(
+            ds,
+            x_key=args.train_pair_x_key,
+            y_key=args.train_pair_y_key,
+        )
+        if train_pair_cosine is None:
+            raise ValueError(
+                "Train cosine policy requested but raw pair embeddings were not found. "
+                "Provide --train_pair_x_key/--train_pair_y_key or add supported x/y keys to the NPZ."
+            )
+        if int(train_pair_cosine.shape[0]) != int(y.shape[0]):
+            raise ValueError(
+                "train pair cosine rows mismatch labels: "
+                f"pair_cos={int(train_pair_cosine.shape[0])} labels={int(y.shape[0])}"
+            )
 
     region_key = args.region_key
     sem_bucket_source_key_used: Optional[str] = None
@@ -1243,6 +2390,21 @@ def main(argv: Optional[List[str]] = None) -> None:
     print(f"filter_policy={args.filter_policy}")
     if args.filter_policy == "ambiguous_only":
         print(f"ambiguous_range=[{args.ambiguous_cos_min}, {args.ambiguous_cos_max}]")
+    print(f"train_cosine_policy_active={train_cosine_policy_active}")
+    if train_cosine_policy_active:
+        mode = "hardness_weighting" if args.train_hardness_weighting else "band_filter"
+        print(f"train_cosine_policy_mode={mode}")
+        print(f"train_pair_cosine_source={train_pair_cosine_source}")
+        if args.train_hardness_weighting:
+            print(
+                "train_hardness: "
+                f"gamma={float(args.train_hardness_gamma):.3f} "
+                f"extra_repeats={int(args.train_hardness_extra_repeats)}"
+            )
+        else:
+            cmin = -1.0 if args.train_cosine_min is None else float(args.train_cosine_min)
+            cmax = 1.0 if args.train_cosine_max is None else float(args.train_cosine_max)
+            print(f"train_cosine_band=[{cmin:.4f}, {cmax:.4f}]")
     print(f"caps: train={args.n_train} calib={args.n_calib} eval={args.n_eval}")
     print(f"mins: min_h0_eval={args.min_h0_eval} min_h1_eval={args.min_h1_eval}")
     print(f"run_dir={run_dir}")
@@ -1263,6 +2425,13 @@ def main(argv: Optional[List[str]] = None) -> None:
             f"include_in_comparison={include_ocats_in_comparison} "
             f"progress_every={int(args.ocats_progress_every)}"
         )
+    if args.enable_optuna:
+        print(
+            "optuna: "
+            f"trials={int(args.optuna_trials)} val_frac={float(args.optuna_val_frac):.3f} "
+            f"target={args.optuna_target_method} metric={args.optuna_metric} "
+            f"apply_best={bool(args.optuna_apply_best)}"
+        )
 
     has_xgb = "XGBoost" in build_methods()
 
@@ -1280,8 +2449,14 @@ def main(argv: Optional[List[str]] = None) -> None:
     ocats_trial_rows: List[Dict[str, Any]] = []
     ocats_tuning_rows: List[Dict[str, Any]] = []
     ocats_curve_rows: List[Dict[str, Any]] = []
+    optuna_trial_rows: List[Dict[str, Any]] = []
+    optuna_candidate_rows: List[Dict[str, Any]] = []
+    optuna_best_rows: List[Dict[str, Any]] = []
+
+    base_args = args
 
     for trial in range(args.n_trials):
+        args = base_args
         seed = args.seed + trial
 
         if args.tau_mode == "global":
@@ -1318,30 +2493,162 @@ def main(argv: Optional[List[str]] = None) -> None:
                     seed=seed,
                 )
 
-            H0_train = X_main[gs.H0_train]
-            H1_train = X_main[gs.H1_train]
+            train_cos_stats_global: Optional[Dict[str, Any]] = None
+            if train_cosine_policy_active:
+                if train_pair_cosine is None:
+                    raise RuntimeError("Train cosine policy active but train_pair_cosine is unavailable")
+                gs, train_cos_stats_global = _apply_train_cosine_policy_global(
+                    gs,
+                    pair_cosine=train_pair_cosine,
+                    cosine_min=args.train_cosine_min,
+                    cosine_max=args.train_cosine_max,
+                    use_hardness_weighting=bool(args.train_hardness_weighting),
+                    hardness_gamma=float(args.train_hardness_gamma),
+                    hardness_extra_repeats=int(args.train_hardness_extra_repeats),
+                )
+
+            optuna_split_stats: Dict[str, int] = {}
+            if args.enable_optuna:
+                gs_val, gs_test, optuna_split_stats = split_global_eval_for_validation(
+                    gs,
+                    val_frac=float(args.optuna_val_frac),
+                    seed=seed + 100_000,
+                    min_test_h0=1,
+                    min_test_h1=1,
+                )
+                if gs_val.H0_eval.size == 0 or gs_val.H1_eval.size == 0:
+                    raise RuntimeError("Optuna validation split is empty; increase --n_eval or adjust --optuna_val_frac")
+                if gs_test.H0_eval.size == 0 or gs_test.H1_eval.size == 0:
+                    raise RuntimeError("Optuna final test split is empty; increase --n_eval or adjust --optuna_val_frac")
+
+                def _eval_candidate_global(candidate_args: argparse.Namespace, params: Dict[str, Any], optuna_trial: Any) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+                    del params
+                    return _evaluate_global_candidate(
+                        candidate_args,
+                        gs=gs_val,
+                        X_main=X_main,
+                        X_cos=X_cos,
+                        X_text=X_text,
+                        y=y,
+                        region_id=region_id,
+                        h0_monitor_idx=h0_monitor_idx,
+                        h1_monitor_idx=h1_monitor_idx,
+                        trial=int(optuna_trial.number),
+                        seed=seed,
+                        region_key=args.region_key,
+                        selected_ocats_methods=selected_ocats_methods,
+                        lambda_values=lambda_values,
+                        run_ocats_baselines=run_ocats_baselines,
+                        include_ocats_in_comparison=include_ocats_in_comparison,
+                    )
+
+                print(
+                    "  optuna_split: "
+                    f"val(n0={optuna_split_stats['val_h0']}, n1={optuna_split_stats['val_h1']}) "
+                    f"test(n0={optuna_split_stats['test_h0']}, n1={optuna_split_stats['test_h1']})"
+                )
+                search_result = run_optuna_search(
+                    args=args,
+                    scope="global",
+                    evaluate_candidate=_eval_candidate_global,
+                    has_xgb=has_xgb,
+                    has_text_pairs=X_text is not None,
+                    has_x_cos=X_cos is not None,
+                    include_ocats=run_ocats_baselines,
+                    include_online=bool(args.enable_online_stopping),
+                    n_trials=int(args.optuna_trials),
+                    timeout=args.optuna_timeout,
+                    seed=int(args.optuna_seed if args.optuna_seed is not None else seed),
+                    target_method=(
+                        f"{selected_ocats_methods[0]}[OCaTS:optuna_validation]"
+                        if ocats_only_mode and selected_ocats_methods
+                        else str(args.optuna_target_method)
+                    ),
+                    metric=str(args.optuna_metric),
+                    fpr_penalty=float(args.optuna_fpr_penalty),
+                    storage=args.optuna_storage,
+                    study_name=args.optuna_study_name,
+                )
+                optuna_trial_rows.extend(
+                    {
+                        "trial": int(trial),
+                        "seed": int(seed),
+                        "scope": "global",
+                        "optuna_trial": int(r["optuna_trial"]),
+                        "value": float(r["value"]),
+                        "selected_method": str(r.get("selected_method", "")),
+                        "selected_tpr": float(r.get("selected_tpr", float("nan"))),
+                        "selected_fpr": float(r.get("selected_fpr", float("nan"))),
+                        "failed": bool(r.get("failed", False)),
+                        "params_json": json.dumps(r.get("params", {}), sort_keys=True),
+                    }
+                    for r in search_result.trials
+                )
+                optuna_candidate_rows.extend(
+                    {**dict(r), "outer_trial": int(trial), "outer_seed": int(seed), "scope": "global"}
+                    for r in search_result.candidate_rows
+                )
+                optuna_best_rows.append(
+                    {
+                        "trial": int(trial),
+                        "seed": int(seed),
+                        "scope": "global",
+                        "best_optuna_trial": int(search_result.best_trial_number),
+                        "best_value": float(search_result.best_value),
+                        "best_params": dict(search_result.best_params),
+                    }
+                )
+                if args.optuna_apply_best:
+                    args = apply_params_to_namespace(args, search_result.best_params)
+                print(
+                    "  optuna_best: "
+                    f"trial={search_result.best_trial_number} value={search_result.best_value:.6f} "
+                    f"tau_mode={getattr(args, 'tau_mode', 'global')}"
+                )
+                gs = gs_test
+
+            h0_train_idx_fit = np.asarray(gs.H0_train, dtype=np.int64).reshape(-1)
+            h1_train_idx_fit = np.asarray(gs.H1_train, dtype=np.int64).reshape(-1)
+            h0_train_idx_unique = np.unique(h0_train_idx_fit) if h0_train_idx_fit.size > 0 else h0_train_idx_fit
+            h1_train_idx_unique = np.unique(h1_train_idx_fit) if h1_train_idx_fit.size > 0 else h1_train_idx_fit
+
+            H0_train = X_main[h0_train_idx_fit]
+            H1_train = X_main[h1_train_idx_fit]
             H0_calib_pure = X_main[gs.H0_calib]
             H1_calib_pure = X_main[gs.H1_calib]
-            H0_calib_eff = X_main[np.concatenate([gs.H0_train, gs.H0_calib])] \
-                if gs.H0_train.size > 0 else X_main[gs.H0_calib]
-            H1_calib_eff = X_main[np.concatenate([gs.H1_train, gs.H1_calib])] \
-                if gs.H1_train.size > 0 else X_main[gs.H1_calib]
+            H0_calib_eff = X_main[np.concatenate([h0_train_idx_unique, gs.H0_calib])] \
+                if h0_train_idx_unique.size > 0 else X_main[gs.H0_calib]
+            H1_calib_eff = X_main[np.concatenate([h1_train_idx_unique, gs.H1_calib])] \
+                if h1_train_idx_unique.size > 0 else X_main[gs.H1_calib]
 
             # Extract X_cos splits if available
-            H0_train_cos = X_cos[gs.H0_train] if X_cos is not None else None
-            H1_train_cos = X_cos[gs.H1_train] if X_cos is not None else None
+            H0_train_cos = X_cos[h0_train_idx_fit] if X_cos is not None else None
+            H1_train_cos = X_cos[h1_train_idx_fit] if X_cos is not None else None
             if X_cos is not None:
                 H0_calib_pure_cos = X_cos[gs.H0_calib]
                 H1_calib_pure_cos = X_cos[gs.H1_calib]
-                H0_calib_eff_cos = X_cos[np.concatenate([gs.H0_train, gs.H0_calib])] \
-                    if gs.H0_train.size > 0 else X_cos[gs.H0_calib]
-                H1_calib_eff_cos = X_cos[np.concatenate([gs.H1_train, gs.H1_calib])] \
-                    if gs.H1_train.size > 0 else X_cos[gs.H1_calib]
+                H0_calib_eff_cos = X_cos[np.concatenate([h0_train_idx_unique, gs.H0_calib])] \
+                    if h0_train_idx_unique.size > 0 else X_cos[gs.H0_calib]
+                H1_calib_eff_cos = X_cos[np.concatenate([h1_train_idx_unique, gs.H1_calib])] \
+                    if h1_train_idx_unique.size > 0 else X_cos[gs.H1_calib]
             else:
                 H0_calib_pure_cos = None
                 H1_calib_pure_cos = None
                 H0_calib_eff_cos = None
                 H1_calib_eff_cos = None
+
+            if X_text is not None:
+                H0_train_text = X_text[h0_train_idx_fit]
+                H1_train_text = X_text[h1_train_idx_fit]
+                H0_calib_eff_text = X_text[np.concatenate([h0_train_idx_unique, gs.H0_calib])] \
+                    if h0_train_idx_unique.size > 0 else X_text[gs.H0_calib]
+                H1_calib_eff_text = X_text[np.concatenate([h1_train_idx_unique, gs.H1_calib])] \
+                    if h1_train_idx_unique.size > 0 else X_text[gs.H1_calib]
+            else:
+                H0_train_text = None
+                H1_train_text = None
+                H0_calib_eff_text = None
+                H1_calib_eff_text = None
 
             n_unique_regions = int(len(np.unique(region_id)))
             print(f"\n[trial={trial} seed={seed}] GLOBAL mode — total_samples={y.size}")
@@ -1362,6 +2669,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                     f"calib(n0={filter_stats_global['h0_calib']},n1={filter_stats_global['h1_calib']}) "
                     f"eval(n0={filter_stats_global['h0_eval']},n1={filter_stats_global['h1_eval']})"
                 )
+            if train_cos_stats_global is not None:
+                _log_train_cosine_policy_stats(train_cos_stats_global)
             print(f"  regions (for macro stats only): {n_unique_regions}")
 
             if H0_calib_eff.shape[0] == 0 or H1_calib_eff.shape[0] == 0:
@@ -1412,7 +2721,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             v1 = np.var(H1_calib_eff, axis=0)
             weights = (v1 / (v0 + 1e-12)).astype(np.float32, copy=False)
 
-            methods = build_methods()
+            methods = _build_configured_methods(args, X_cos=X_cos, X_text=X_text, quiet=True)
             if args.hadamard_preprocess and X_cos is not None:
                 try:
                     from np_bench.methods.precomputed_cosine import PrecomputedCosineMethod
@@ -1461,7 +2770,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                 except Exception as exc:
                     print(f"[WARN] Could not load PrecomputedCosine: {exc}")
 
-            if args.regional_weighted_ensemble:
+            if args.regional_weighted_ensemble and "RegionalWeightedEnsemble" not in methods:
                 try:
                     from np_bench.methods.regional_weighted_ensemble import (
                         RegionalEnsembleConfig,
@@ -1536,18 +2845,10 @@ def main(argv: Optional[List[str]] = None) -> None:
                 H1_train_cos=H1_train_cos,
                 H0_calib_eff_cos=H0_calib_eff_cos,
                 H1_calib_eff_cos=H1_calib_eff_cos,
-                H0_train_text=X_text[gs.H0_train] if X_text is not None else None,
-                H1_train_text=X_text[gs.H1_train] if X_text is not None else None,
-                H0_calib_eff_text=(
-                    X_text[np.concatenate([gs.H0_train, gs.H0_calib])]
-                    if X_text is not None and gs.H0_train.size > 0
-                    else (X_text[gs.H0_calib] if X_text is not None else None)
-                ),
-                H1_calib_eff_text=(
-                    X_text[np.concatenate([gs.H1_train, gs.H1_calib])]
-                    if X_text is not None and gs.H1_train.size > 0
-                    else (X_text[gs.H1_calib] if X_text is not None else None)
-                ),
+                H0_train_text=H0_train_text,
+                H1_train_text=H1_train_text,
+                H0_calib_eff_text=H0_calib_eff_text,
+                H1_calib_eff_text=H1_calib_eff_text,
                 H0_calib_pure_cos=H0_calib_pure_cos,
                 H1_calib_pure_cos=H1_calib_pure_cos,
                 H0_calib_region_ids=region_id[gs.H0_calib],
@@ -1722,10 +3023,126 @@ def main(argv: Optional[List[str]] = None) -> None:
                     seed=seed,
                 )
 
+            train_cos_stats_local: Optional[Dict[str, Any]] = None
+            if train_cosine_policy_active:
+                if train_pair_cosine is None:
+                    raise RuntimeError("Train cosine policy active but train_pair_cosine is unavailable")
+                splits, train_cos_stats_local = _apply_train_cosine_policy_regions(
+                    splits,
+                    pair_cosine=train_pair_cosine,
+                    cosine_min=args.train_cosine_min,
+                    cosine_max=args.train_cosine_max,
+                    use_hardness_weighting=bool(args.train_hardness_weighting),
+                    hardness_gamma=float(args.train_hardness_gamma),
+                    hardness_extra_repeats=int(args.train_hardness_extra_repeats),
+                )
+
             if len(splits) == 0:
                 raise RuntimeError(
                     "No regions satisfied eval mins. Lower mins, increase caps, or change regioning."
                 )
+
+            optuna_split_stats: Dict[str, int] = {}
+            if args.enable_optuna:
+                splits_val, splits_test, optuna_split_stats = split_region_eval_for_validation(
+                    splits,
+                    val_frac=float(args.optuna_val_frac),
+                    seed=seed + 100_000,
+                    min_test_h0=1,
+                    min_test_h1=1,
+                )
+                if not splits_val or not splits_test:
+                    raise RuntimeError("Optuna validation/test region split is empty; increase --n_eval or adjust --optuna_val_frac")
+
+                def _eval_candidate_local(candidate_args: argparse.Namespace, params: Dict[str, Any], optuna_trial: Any) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+                    del params
+                    return _evaluate_local_candidate(
+                        candidate_args,
+                        splits=splits_val,
+                        X_main=X_main,
+                        X_cos=X_cos,
+                        X_text=X_text,
+                        y=y,
+                        region_id=region_id,
+                        X_anchor_source=X_anchor_source,
+                        h0_monitor_idx=h0_monitor_idx,
+                        h1_monitor_idx=h1_monitor_idx,
+                        trial=int(optuna_trial.number),
+                        seed=seed,
+                        region_key=args.region_key,
+                        selected_ocats_methods=selected_ocats_methods,
+                        lambda_values=lambda_values,
+                        run_ocats_baselines=run_ocats_baselines,
+                        include_ocats_in_comparison=include_ocats_in_comparison,
+                    )
+
+                print(
+                    "  optuna_split: "
+                    f"val_regions={optuna_split_stats['val_regions']} "
+                    f"test_regions={optuna_split_stats['test_regions']} "
+                    f"val(n0={optuna_split_stats['val_h0']}, n1={optuna_split_stats['val_h1']}) "
+                    f"test(n0={optuna_split_stats['test_h0']}, n1={optuna_split_stats['test_h1']}) "
+                    f"dropped_regions={optuna_split_stats['dropped_regions']}"
+                )
+                search_result = run_optuna_search(
+                    args=args,
+                    scope="local",
+                    evaluate_candidate=_eval_candidate_local,
+                    has_xgb=has_xgb,
+                    has_text_pairs=X_text is not None,
+                    has_x_cos=X_cos is not None,
+                    include_ocats=run_ocats_baselines,
+                    include_online=bool(args.enable_online_stopping),
+                    n_trials=int(args.optuna_trials),
+                    timeout=args.optuna_timeout,
+                    seed=int(args.optuna_seed if args.optuna_seed is not None else seed),
+                    target_method=(
+                        f"{selected_ocats_methods[0]}[OCaTS:optuna_validation]"
+                        if ocats_only_mode and selected_ocats_methods
+                        else str(args.optuna_target_method)
+                    ),
+                    metric=str(args.optuna_metric),
+                    fpr_penalty=float(args.optuna_fpr_penalty),
+                    storage=args.optuna_storage,
+                    study_name=args.optuna_study_name,
+                )
+                optuna_trial_rows.extend(
+                    {
+                        "trial": int(trial),
+                        "seed": int(seed),
+                        "scope": "local",
+                        "optuna_trial": int(r["optuna_trial"]),
+                        "value": float(r["value"]),
+                        "selected_method": str(r.get("selected_method", "")),
+                        "selected_tpr": float(r.get("selected_tpr", float("nan"))),
+                        "selected_fpr": float(r.get("selected_fpr", float("nan"))),
+                        "failed": bool(r.get("failed", False)),
+                        "params_json": json.dumps(r.get("params", {}), sort_keys=True),
+                    }
+                    for r in search_result.trials
+                )
+                optuna_candidate_rows.extend(
+                    {**dict(r), "outer_trial": int(trial), "outer_seed": int(seed), "scope": "local"}
+                    for r in search_result.candidate_rows
+                )
+                optuna_best_rows.append(
+                    {
+                        "trial": int(trial),
+                        "seed": int(seed),
+                        "scope": "local",
+                        "best_optuna_trial": int(search_result.best_trial_number),
+                        "best_value": float(search_result.best_value),
+                        "best_params": dict(search_result.best_params),
+                    }
+                )
+                if args.optuna_apply_best:
+                    args = apply_params_to_namespace(args, search_result.best_params)
+                print(
+                    "  optuna_best: "
+                    f"trial={search_result.best_trial_number} value={search_result.best_value:.6f} "
+                    f"tau_mode={getattr(args, 'tau_mode', 'local')}"
+                )
+                splits = splits_test
 
             tau_cluster_id_by_rid: Optional[Dict[int, int]] = None
             if args.tau_mode == "cluster_local":
@@ -1755,25 +3172,36 @@ def main(argv: Optional[List[str]] = None) -> None:
             # Pool indices across regions
             h0_train_idx_list = [s.H0_train for s in splits if s.H0_train.size > 0]
             h1_train_idx_list = [s.H1_train for s in splits if s.H1_train.size > 0]
-            H0_train = X_main[np.concatenate(h0_train_idx_list)] if h0_train_idx_list else X_main[:0]
-            H1_train = X_main[np.concatenate(h1_train_idx_list)] if h1_train_idx_list else X_main[:0]
+            h0_train_idx_fit = _concat_indices(h0_train_idx_list)
+            h1_train_idx_fit = _concat_indices(h1_train_idx_list)
+            h0_train_idx_unique = np.unique(h0_train_idx_fit) if h0_train_idx_fit.size > 0 else h0_train_idx_fit
+            h1_train_idx_unique = np.unique(h1_train_idx_fit) if h1_train_idx_fit.size > 0 else h1_train_idx_fit
+
+            H0_train = X_main[h0_train_idx_fit] if h0_train_idx_fit.size > 0 else X_main[:0]
+            H1_train = X_main[h1_train_idx_fit] if h1_train_idx_fit.size > 0 else X_main[:0]
 
             h0_calib_list = [s.H0_calib for s in splits if s.H0_calib.size > 0]
             h1_calib_list = [s.H1_calib for s in splits if s.H1_calib.size > 0]
-            H0_calib = X_main[np.concatenate(h0_calib_list)] if h0_calib_list else X_main[:0]
-            H1_calib = X_main[np.concatenate(h1_calib_list)] if h1_calib_list else X_main[:0]
+            h0_calib_idx = _concat_indices(h0_calib_list)
+            h1_calib_idx = _concat_indices(h1_calib_list)
+            H0_calib = X_main[h0_calib_idx] if h0_calib_idx.size > 0 else X_main[:0]
+            H1_calib = X_main[h1_calib_idx] if h1_calib_idx.size > 0 else X_main[:0]
 
-            H0_calib_eff = np.concatenate([H0_train, H0_calib], axis=0) if H0_train.shape[0] > 0 else H0_calib
-            H1_calib_eff = np.concatenate([H1_train, H1_calib], axis=0) if H1_train.shape[0] > 0 else H1_calib
+            H0_calib_eff = X_main[np.concatenate([h0_train_idx_unique, h0_calib_idx])] \
+                if h0_train_idx_unique.size > 0 else H0_calib
+            H1_calib_eff = X_main[np.concatenate([h1_train_idx_unique, h1_calib_idx])] \
+                if h1_train_idx_unique.size > 0 else H1_calib
 
             # Extract X_cos splits if available
             if X_cos is not None:
-                H0_train_cos = X_cos[np.concatenate(h0_train_idx_list)] if h0_train_idx_list else X_cos[:0]
-                H1_train_cos = X_cos[np.concatenate(h1_train_idx_list)] if h1_train_idx_list else X_cos[:0]
-                H0_calib_cos = X_cos[np.concatenate(h0_calib_list)] if h0_calib_list else X_cos[:0]
-                H1_calib_cos = X_cos[np.concatenate(h1_calib_list)] if h1_calib_list else X_cos[:0]
-                H0_calib_eff_cos = np.concatenate([H0_train_cos, H0_calib_cos], axis=0) if H0_train_cos.shape[0] > 0 else H0_calib_cos
-                H1_calib_eff_cos = np.concatenate([H1_train_cos, H1_calib_cos], axis=0) if H1_train_cos.shape[0] > 0 else H1_calib_cos
+                H0_train_cos = X_cos[h0_train_idx_fit] if h0_train_idx_fit.size > 0 else X_cos[:0]
+                H1_train_cos = X_cos[h1_train_idx_fit] if h1_train_idx_fit.size > 0 else X_cos[:0]
+                H0_calib_cos = X_cos[h0_calib_idx] if h0_calib_idx.size > 0 else X_cos[:0]
+                H1_calib_cos = X_cos[h1_calib_idx] if h1_calib_idx.size > 0 else X_cos[:0]
+                H0_calib_eff_cos = X_cos[np.concatenate([h0_train_idx_unique, h0_calib_idx])] \
+                    if h0_train_idx_unique.size > 0 else H0_calib_cos
+                H1_calib_eff_cos = X_cos[np.concatenate([h1_train_idx_unique, h1_calib_idx])] \
+                    if h1_train_idx_unique.size > 0 else H1_calib_cos
             else:
                 H0_train_cos = None
                 H1_train_cos = None
@@ -1783,12 +3211,14 @@ def main(argv: Optional[List[str]] = None) -> None:
                 H1_calib_eff_cos = None
 
             if X_text is not None:
-                H0_train_text = X_text[np.concatenate(h0_train_idx_list)] if h0_train_idx_list else X_text[:0]
-                H1_train_text = X_text[np.concatenate(h1_train_idx_list)] if h1_train_idx_list else X_text[:0]
-                H0_calib_text = X_text[np.concatenate(h0_calib_list)] if h0_calib_list else X_text[:0]
-                H1_calib_text = X_text[np.concatenate(h1_calib_list)] if h1_calib_list else X_text[:0]
-                H0_calib_eff_text = np.concatenate([H0_train_text, H0_calib_text], axis=0) if H0_train_text.shape[0] > 0 else H0_calib_text
-                H1_calib_eff_text = np.concatenate([H1_train_text, H1_calib_text], axis=0) if H1_train_text.shape[0] > 0 else H1_calib_text
+                H0_train_text = X_text[h0_train_idx_fit] if h0_train_idx_fit.size > 0 else X_text[:0]
+                H1_train_text = X_text[h1_train_idx_fit] if h1_train_idx_fit.size > 0 else X_text[:0]
+                H0_calib_text = X_text[h0_calib_idx] if h0_calib_idx.size > 0 else X_text[:0]
+                H1_calib_text = X_text[h1_calib_idx] if h1_calib_idx.size > 0 else X_text[:0]
+                H0_calib_eff_text = X_text[np.concatenate([h0_train_idx_unique, h0_calib_idx])] \
+                    if h0_train_idx_unique.size > 0 else H0_calib_text
+                H1_calib_eff_text = X_text[np.concatenate([h1_train_idx_unique, h1_calib_idx])] \
+                    if h1_train_idx_unique.size > 0 else H1_calib_text
             else:
                 H0_train_text = None
                 H1_train_text = None
@@ -1798,6 +3228,8 @@ def main(argv: Optional[List[str]] = None) -> None:
             print(f"\n[trial={trial} seed={seed}] used_regions={len(splits)} split_stats={split_stats}")
             if filter_stats_local:
                 print(f"  post_filter_stats={filter_stats_local}")
+            if train_cos_stats_local is not None:
+                _log_train_cosine_policy_stats(train_cos_stats_local)
             if len(splits) < 5:
                 print(f"  [WARN] Only {len(splits)} region(s) evaluated. Results are high-variance.")
             print(f"  local_fit_mode: {args.local_fit_mode}")
@@ -1883,7 +3315,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             v1 = np.var(H1_calib_eff, axis=0)
             weights = (v1 / (v0 + 1e-12)).astype(np.float32, copy=False)
 
-            methods = build_methods()
+            methods = _build_configured_methods(args, X_cos=X_cos, X_text=X_text, quiet=True)
             if args.hadamard_preprocess and X_cos is not None:
                 try:
                     from np_bench.methods.precomputed_cosine import PrecomputedCosineMethod
@@ -1932,7 +3364,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                 except Exception as exc:
                     print(f"[WARN] Could not load PrecomputedCosine: {exc}")
 
-            if args.regional_weighted_ensemble:
+            if args.regional_weighted_ensemble and "RegionalWeightedEnsemble" not in methods:
                 try:
                     from np_bench.methods.regional_weighted_ensemble import (
                         RegionalEnsembleConfig,
@@ -2176,7 +3608,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                 if gs_matched.H0_calib.size > 0 and gs_matched.H0_eval.size > 0 and gs_matched.H1_eval.size > 0:
                     # Rebuild and refit a fresh method set to avoid state carry-over
                     # from local per-region evaluation (e.g., methods with fit_region state).
-                    methods_matched = build_methods()
+                    methods_matched = _build_configured_methods(args, X_cos=X_cos, X_text=X_text, quiet=True)
                     if args.hadamard_preprocess and X_cos is not None:
                         try:
                             from np_bench.methods.precomputed_cosine import PrecomputedCosineMethod
@@ -2220,7 +3652,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                         except Exception:
                             pass
 
-                    if args.regional_weighted_ensemble:
+                    if args.regional_weighted_ensemble and "RegionalWeightedEnsemble" not in methods_matched:
                         try:
                             from np_bench.methods.regional_weighted_ensemble import (
                                 RegionalEnsembleConfig,
@@ -2549,6 +3981,30 @@ def main(argv: Optional[List[str]] = None) -> None:
                 "e_thresh", "d_thresh",
             ],
         )
+    if optuna_trial_rows:
+        save_csv_rows(
+            run_dir / "optuna_trials.csv",
+            optuna_trial_rows,
+            fieldnames=[
+                "trial", "seed", "scope", "optuna_trial", "value",
+                "selected_method", "selected_tpr", "selected_fpr",
+                "failed", "params_json",
+            ],
+        )
+        save_json(
+            run_dir / "optuna_trials.json",
+            {"rows": optuna_trial_rows},
+        )
+    if optuna_candidate_rows:
+        save_json(
+            run_dir / "optuna_validation_rows.json",
+            {"rows": optuna_candidate_rows},
+        )
+    if optuna_best_rows:
+        save_json(
+            run_dir / "optuna_best.json",
+            {"rows": optuna_best_rows},
+        )
     save_csv_rows(
         run_dir / "weighted_ensemble_meta_weights.csv",
         weighted_ensemble_meta_rows,
@@ -2583,6 +4039,20 @@ def main(argv: Optional[List[str]] = None) -> None:
             "filter_policy": args.filter_policy,
             "ambiguous_cos_min": float(args.ambiguous_cos_min),
             "ambiguous_cos_max": float(args.ambiguous_cos_max),
+            "train_cosine_policy_active": bool(train_cosine_policy_active),
+            "train_cosine_policy_mode": (
+                "hardness_weighting"
+                if args.train_hardness_weighting
+                else ("band_filter" if train_cosine_band_active else "none")
+            ),
+            "train_cosine_min": (float(args.train_cosine_min) if args.train_cosine_min is not None else None),
+            "train_cosine_max": (float(args.train_cosine_max) if args.train_cosine_max is not None else None),
+            "train_hardness_weighting": bool(args.train_hardness_weighting),
+            "train_hardness_gamma": float(args.train_hardness_gamma),
+            "train_hardness_extra_repeats": int(args.train_hardness_extra_repeats),
+            "train_pair_x_key": args.train_pair_x_key,
+            "train_pair_y_key": args.train_pair_y_key,
+            "train_pair_cosine_source": train_pair_cosine_source,
             "cos_affine_calib": bool(args.cos_affine_calib),
             "precomputed_cosine": bool(args.precomputed_cosine),
             "cos_affine_grouping": args.cos_affine_grouping,
@@ -2693,6 +4163,22 @@ def main(argv: Optional[List[str]] = None) -> None:
                 "online_init_h1": int(args.online_init_h1),
                 "history_rows": int(len(online_stopping_history_rows)),
                 "summary_rows": int(len(online_stopping_summary_rows)),
+            },
+            "optuna": {
+                "enabled": bool(base_args.enable_optuna),
+                "trials": int(base_args.optuna_trials),
+                "timeout": base_args.optuna_timeout,
+                "seed": base_args.optuna_seed,
+                "val_frac": float(base_args.optuna_val_frac),
+                "target_method": str(base_args.optuna_target_method),
+                "metric": str(base_args.optuna_metric),
+                "fpr_penalty": float(base_args.optuna_fpr_penalty),
+                "storage": base_args.optuna_storage,
+                "study_name": base_args.optuna_study_name,
+                "apply_best": bool(base_args.optuna_apply_best),
+                "trial_rows": int(len(optuna_trial_rows)),
+                "validation_rows": int(len(optuna_candidate_rows)),
+                "best_rows": int(len(optuna_best_rows)),
             },
             "failures": failures,
         },

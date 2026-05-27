@@ -24,6 +24,10 @@ import numpy as np
 from np_bench.data import load_quora_hadamard
 from np_bench.methods import (
     CosineMethod,
+    HadamardCosineMethod,
+    FisherWhitenedHadamardPooledMethod,
+    FisherWhitenedHadamardWithinMethod,
+    StabilizedWhitenedCosineMethod,
     VectorWeightedMethod,
     NaiveBayesMethod,
     LogisticRegressionMethod,
@@ -45,6 +49,10 @@ except Exception:
 
 METHOD_REGISTRY: Dict[str, type] = {
     "Cosine": CosineMethod,
+    "HadamardCosine": HadamardCosineMethod,
+    "FWHS-pooled": FisherWhitenedHadamardPooledMethod,
+    "FWHS-within": FisherWhitenedHadamardWithinMethod,
+    "PCAWhitenedCosine": StabilizedWhitenedCosineMethod,
     "Vec (Wgt)": VectorWeightedMethod,
     "Naive Bayes": NaiveBayesMethod,
     "Log Reg": LogisticRegressionMethod,

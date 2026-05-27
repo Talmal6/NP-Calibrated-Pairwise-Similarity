@@ -1,0 +1,27 @@
+------------------------------------
+Wed 29 Apr 2026 12:34:49 IDT
+SLURM_JOBID:		17261115
+SLURM_JOB_NODELIST:	ise-cpu256-20
+SLURM_SCRATCH_DIR:	/scratch/malmatal/17261115
+Allocated Resouces:	cpu - 4 / mem - 32768 MB / gpu - 0
+SLURM_GPU_INDEX:	0
+Running as malmatal from gilein account with normal QOS
+------------------------------------
+Loading existing data from NeighborCache/data/h1h0_final.npz...
+Loaded 200000 samples
+
+Loading model redis/langcache-embed-v2...
+Embedding dimension: 768
+
+Generating embeddings in batches of 8...
+Final embeddings shape: (200000, 768)
+
+Saving to NeighborCache/data/h1h0_final_langcache.npz...
+✓ Successfully created NeighborCache/data/h1h0_final_langcache.npz
+  - text: shape=(200000,)
+  - label: shape=(200000,)
+  - meta: shape=(1,)
+  - emb: shape=(200000, 768) (langcache-embed-v2)
+  - emb_umap: shape=(200000, 30)
+  - global_cluster: shape=(200000,)
+

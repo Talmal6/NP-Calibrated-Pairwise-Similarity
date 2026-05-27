@@ -1,0 +1,1856 @@
+<frozen runpy>:128: RuntimeWarning: 'NeighborCache.region_local_threshold.cli' found in sys.modules after import of package 'NeighborCache.region_local_threshold', but prior to execution of 'NeighborCache.region_local_threshold.cli'; this may result in unpredictable behaviour
+[INFO] Using features key='emb' dim=768
+[INFO] Applied Hadamard preprocessing (strategy=centroid_nearest, use_delta_vec=False, use_abs_diff=False) to X_main
+
+=== Region Threshold Benchmark ===
+dataset_npz=NeighborCache/data/h1h0_final_langcache.npz
+region_key=global_cluster (resolved=global_cluster, unique=1103)
+features=emb+hadamard rows=200000 dim=768
+text_pairs=text+region_anchor[centroid_nearest]
+alpha=0.01 tie_mode=ge trials=50 base_seed=42
+tau_mode=global
+hadamard_preprocess=True
+abs_diff_only_preprocess=False
+use_delta_vec=False
+use_abs_diff=False
+normalize_data=False
+filter_policy=none
+train_cosine_policy_active=False
+caps: train=1270 calib=1240 eval=1270
+mins: min_h0_eval=20 min_h1_eval=20
+run_dir=/home/malmatal/Projects/Multi_Dim_Threshold/NeighborCache/outputs/region_local_threshold/run_20260507_082245
+
+[trial=0 seed=42] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.1377, Pooled external calib: TPR=0.3040, FPR=0.0097
+  PrecomputedCosine   : +0.1369
+  PCAWhitenedCosine   : +0.3322
+  XGBoost             : +0.4468
+  Tiny MLP            : +0.0732
+  LDA                 : +0.0110
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.2134 | 0.0157 | 0.2234 | 0.0097 | 0.1571   | 0.0239   | 868     | 0.9969  | 40.9 | FAIL
+AndBox-HC                | 0.2331 | 0.0205 | 0.2540 | 0.0097 | 0.1906   | 0.0313   | 868     | -0.0000 | 33.5 | FAIL
+PCAWhitenedCosine        | 0.2488 | 0.0157 | 0.2782 | 0.0097 | 0.1871   | 0.0263   | 868     | 1.6889  | 30.8 | FAIL
+Vec (Wgt)                | 0.3181 | 0.0165 | 0.3468 | 0.0097 | 0.2420   | 0.0287   | 868     | 0.9869  | 30.4 | FAIL
+Log Reg                  | 0.1354 | 0.0039 | 0.1637 | 0.0097 | 0.0884   | 0.0069   | 868     | 0.5233  | 36.6 | PASS
+LDA                      | 0.1189 | 0.0142 | 0.1218 | 0.0097 | 0.0904   | 0.0212   | 868     | 5.9637  | 32.9 | FAIL
+Tiny MLP                 | 0.1969 | 0.0110 | 0.2226 | 0.0097 | 0.1448   | 0.0189   | 868     | 0.9742  | 34.4 | FAIL
+MultiProtoCosine         | 0.0472 | 0.0008 | 0.0589 | 0.0097 | 0.0250   | 0.0003   | 868     | 0.8980  | 37.3 | PASS
+WeightedEnsemble         | 0.2732 | 0.0173 | 0.3040 | 0.0097 | 0.2068   | 0.0297   | 868     | 1.1377  | 58.2 | FAIL
+XGBoost                  | 0.2150 | 0.0094 | 0.2323 | 0.0097 | 0.1639   | 0.0169   | 868     | 0.8108  | 50.4 | PASS
+LDA1+LogReg              | 0.1268 | 0.0031 | 0.1540 | 0.0097 | 0.0819   | 0.0051   | 868     | 0.5245  | 33.8 | PASS
+PCA16+LogReg             | 0.1354 | 0.0039 | 0.1653 | 0.0097 | 0.0898   | 0.0069   | 868     | 0.5232  | 35.6 | PASS
+PCA32+LogReg             | 0.1378 | 0.0039 | 0.1685 | 0.0097 | 0.0929   | 0.0069   | 868     | 0.5230  | 36.7 | PASS
+PCA16+VecWeighted        | 0.0024 | 0.0063 | 0.0016 | 0.0097 | 0.0024   | 0.0054   | 868     | 0.0606  | 34.8 | PASS
+PCA32+VecWeighted        | 0.0063 | 0.0094 | 0.0081 | 0.0097 | 0.0069   | 0.0097   | 868     | 0.0664  | 35.2 | PASS
+StabilizedWhitenedCosine | 0.2276 | 0.0047 | 0.2403 | 0.0097 | 0.1635   | 0.0091   | 868     | 1.7186  | 33.9 | PASS
+
+[trial=1 seed=43] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=2.1310, Pooled external calib: TPR=0.2597, FPR=0.0097
+  PrecomputedCosine   : +0.0558
+  PCAWhitenedCosine   : +0.3307
+  XGBoost             : +0.2565
+  Tiny MLP            : +0.1195
+  LDA                 : +0.2374
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1795 | 0.0094 | 0.1685 | 0.0169 | 0.1483   | 0.0141   | 850     | 1.0000  | 32.7 | PASS
+AndBox-HC                | 0.1417 | 0.0134 | 0.1331 | 0.0097 | 0.1168   | 0.0200   | 850     | 0.0000  | 36.2 | FAIL
+PCAWhitenedCosine        | 0.2370 | 0.0055 | 0.2202 | 0.0097 | 0.1609   | 0.0078   | 850     | 1.7329  | 30.6 | PASS
+Vec (Wgt)                | 0.2315 | 0.0031 | 0.2250 | 0.0097 | 0.1730   | 0.0069   | 850     | 1.0169  | 30.3 | PASS
+Log Reg                  | 0.1717 | 0.0063 | 0.1573 | 0.0097 | 0.1012   | 0.0077   | 850     | 0.5224  | 36.2 | PASS
+LDA                      | 0.1315 | 0.0110 | 0.1234 | 0.0097 | 0.1021   | 0.0221   | 850     | 5.9150  | 32.6 | FAIL
+Tiny MLP                 | 0.2016 | 0.0102 | 0.1855 | 0.0097 | 0.1392   | 0.0207   | 850     | 0.9848  | 34.2 | FAIL
+MultiProtoCosine         | 0.0488 | 0.0087 | 0.0500 | 0.0097 | 0.0308   | 0.0112   | 850     | 0.8999  | 37.2 | PASS
+WeightedEnsemble         | 0.2858 | 0.0110 | 0.2597 | 0.0097 | 0.2000   | 0.0221   | 850     | 2.1310  | 57.9 | FAIL
+XGBoost                  | 0.2402 | 0.0079 | 0.2403 | 0.0097 | 0.1733   | 0.0101   | 850     | 0.8116  | 50.1 | PASS
+LDA1+LogReg              | 0.1598 | 0.0071 | 0.1524 | 0.0097 | 0.0936   | 0.0095   | 850     | 0.5239  | 33.8 | PASS
+PCA16+LogReg             | 0.1685 | 0.0055 | 0.1581 | 0.0097 | 0.1008   | 0.0069   | 850     | 0.5224  | 35.4 | PASS
+PCA32+LogReg             | 0.1677 | 0.0055 | 0.1548 | 0.0097 | 0.0990   | 0.0069   | 850     | 0.5226  | 36.5 | PASS
+PCA16+VecWeighted        | 0.0118 | 0.0102 | 0.0169 | 0.0097 | 0.0196   | 0.0083   | 850     | 0.0650  | 34.4 | FAIL
+PCA32+VecWeighted        | 0.0378 | 0.0087 | 0.0444 | 0.0097 | 0.0370   | 0.0101   | 850     | 0.0681  | 35.4 | PASS
+StabilizedWhitenedCosine | 0.2126 | 0.0047 | 0.2073 | 0.0097 | 0.1372   | 0.0061   | 850     | 1.7121  | 34.0 | PASS
+
+[trial=2 seed=44] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.4803, Pooled external calib: TPR=0.2831, FPR=0.0097
+  PrecomputedCosine   : +0.0656
+  PCAWhitenedCosine   : +0.4602
+  XGBoost             : +0.1200
+  Tiny MLP            : +0.2889
+  LDA                 : +0.0653
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1575 | 0.0094 | 0.1629 | 0.0089 | 0.1346   | 0.0101   | 868     | 1.0000  | 29.6 | PASS
+AndBox-HC                | 0.1417 | 0.0126 | 0.1500 | 0.0097 | 0.1087   | 0.0145   | 868     | 0.0000  | 33.2 | FAIL
+PCAWhitenedCosine        | 0.1827 | 0.0126 | 0.2153 | 0.0097 | 0.1331   | 0.0180   | 868     | 1.7774  | 30.9 | FAIL
+Vec (Wgt)                | 0.2709 | 0.0110 | 0.2863 | 0.0097 | 0.2164   | 0.0151   | 868     | 0.9998  | 30.8 | FAIL
+Log Reg                  | 0.1898 | 0.0118 | 0.2194 | 0.0097 | 0.1370   | 0.0176   | 868     | 0.5193  | 38.0 | FAIL
+LDA                      | 0.0937 | 0.0071 | 0.1258 | 0.0097 | 0.0757   | 0.0123   | 868     | 5.9338  | 33.6 | PASS
+Tiny MLP                 | 0.1307 | 0.0079 | 0.1653 | 0.0097 | 0.0923   | 0.0126   | 868     | 0.9871  | 35.2 | PASS
+MultiProtoCosine         | 0.0480 | 0.0063 | 0.0556 | 0.0097 | 0.0265   | 0.0055   | 868     | 0.9036  | 38.1 | PASS
+WeightedEnsemble         | 0.2551 | 0.0142 | 0.2831 | 0.0097 | 0.1864   | 0.0217   | 868     | 1.4803  | 62.9 | FAIL
+XGBoost                  | 0.2512 | 0.0181 | 0.2524 | 0.0097 | 0.1953   | 0.0270   | 868     | 0.8021  | 51.2 | FAIL
+LDA1+LogReg              | 0.1890 | 0.0110 | 0.2161 | 0.0097 | 0.1367   | 0.0160   | 868     | 0.5195  | 47.6 | FAIL
+PCA16+LogReg             | 0.1945 | 0.0102 | 0.2137 | 0.0097 | 0.1441   | 0.0151   | 868     | 0.5197  | 41.5 | FAIL
+PCA32+LogReg             | 0.1913 | 0.0102 | 0.2145 | 0.0097 | 0.1418   | 0.0151   | 868     | 0.5198  | 39.5 | FAIL
+PCA16+VecWeighted        | 0.0354 | 0.0031 | 0.0395 | 0.0097 | 0.0239   | 0.0046   | 868     | 0.0684  | 34.4 | PASS
+PCA32+VecWeighted        | 0.0283 | 0.0031 | 0.0250 | 0.0097 | 0.0175   | 0.0059   | 868     | 0.0766  | 35.8 | PASS
+StabilizedWhitenedCosine | 0.2701 | 0.0118 | 0.2944 | 0.0097 | 0.2047   | 0.0156   | 868     | 1.4880  | 34.2 | FAIL
+
+[trial=3 seed=45] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.0975, Pooled external calib: TPR=0.3218, FPR=0.0097
+  PrecomputedCosine   : +0.3209
+  PCAWhitenedCosine   : +0.3118
+  XGBoost             : +0.3183
+  Tiny MLP            : +0.0373
+  LDA                 : +0.0115
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms    | OK? 
+---------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.2929 | 0.0150 | 0.2984 | 0.0097 | 0.2457   | 0.0202   | 854     | 0.9849  | 28.7  | FAIL
+AndBox-HC                | 0.2220 | 0.0181 | 0.2161 | 0.0097 | 0.1872   | 0.0246   | 854     | -0.0000 | 34.2  | FAIL
+PCAWhitenedCosine        | 0.3150 | 0.0142 | 0.2976 | 0.0097 | 0.2370   | 0.0162   | 854     | 1.5590  | 29.9  | FAIL
+Vec (Wgt)                | 0.3433 | 0.0157 | 0.3355 | 0.0097 | 0.2602   | 0.0215   | 854     | 0.9833  | 29.7  | FAIL
+Log Reg                  | 0.1843 | 0.0087 | 0.1903 | 0.0097 | 0.1237   | 0.0127   | 854     | 0.5192  | 35.8  | PASS
+LDA                      | 0.1732 | 0.0079 | 0.1613 | 0.0097 | 0.1339   | 0.0103   | 854     | 5.6591  | 32.3  | PASS
+Tiny MLP                 | 0.1976 | 0.0102 | 0.2073 | 0.0097 | 0.1503   | 0.0137   | 854     | 0.9831  | 33.8  | FAIL
+MultiProtoCosine         | 0.0299 | 0.0063 | 0.0306 | 0.0097 | 0.0179   | 0.0061   | 854     | 0.9094  | 61.5  | PASS
+WeightedEnsemble         | 0.3472 | 0.0134 | 0.3218 | 0.0097 | 0.2595   | 0.0156   | 854     | 1.0975  | 112.4 | FAIL
+XGBoost                  | 0.3016 | 0.0094 | 0.3056 | 0.0097 | 0.2407   | 0.0136   | 854     | 0.7951  | 54.9  | PASS
+LDA1+LogReg              | 0.1866 | 0.0087 | 0.1935 | 0.0097 | 0.1267   | 0.0127   | 854     | 0.5192  | 49.1  | PASS
+PCA16+LogReg             | 0.2252 | 0.0110 | 0.2177 | 0.0097 | 0.1510   | 0.0178   | 854     | 0.5180  | 48.0  | FAIL
+PCA32+LogReg             | 0.2150 | 0.0102 | 0.2097 | 0.0097 | 0.1460   | 0.0161   | 854     | 0.5183  | 50.1  | FAIL
+PCA16+VecWeighted        | 0.0220 | 0.0094 | 0.0129 | 0.0097 | 0.0107   | 0.0099   | 854     | 0.0550  | 53.7  | PASS
+PCA32+VecWeighted        | 0.0173 | 0.0079 | 0.0129 | 0.0097 | 0.0107   | 0.0081   | 854     | 0.0616  | 40.1  | PASS
+StabilizedWhitenedCosine | 0.3047 | 0.0110 | 0.2968 | 0.0097 | 0.2245   | 0.0138   | 854     | 1.5239  | 38.2  | FAIL
+
+[trial=4 seed=46] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.2607, Pooled external calib: TPR=0.2637, FPR=0.0097
+  PrecomputedCosine   : +0.1195
+  PCAWhitenedCosine   : +0.3770
+  XGBoost             : +0.2691
+  Tiny MLP            : +0.2045
+  LDA                 : +0.0298
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms    | OK? 
+---------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1874 | 0.0102 | 0.1895 | 0.0097 | 0.1604   | 0.0139   | 871     | 1.0000  | 49.7  | FAIL
+AndBox-HC                | 0.1354 | 0.0079 | 0.1290 | 0.0097 | 0.1081   | 0.0113   | 871     | 0.0000  | 39.6  | PASS
+PCAWhitenedCosine        | 0.2228 | 0.0110 | 0.2185 | 0.0097 | 0.1732   | 0.0149   | 871     | 1.7253  | 81.9  | FAIL
+Vec (Wgt)                | 0.2740 | 0.0118 | 0.2726 | 0.0097 | 0.2078   | 0.0151   | 871     | 0.9955  | 43.8  | FAIL
+Log Reg                  | 0.2055 | 0.0150 | 0.1839 | 0.0097 | 0.1493   | 0.0183   | 871     | 0.5196  | 44.5  | FAIL
+LDA                      | 0.1449 | 0.0134 | 0.1524 | 0.0097 | 0.1204   | 0.0194   | 871     | 5.4674  | 33.1  | FAIL
+Tiny MLP                 | 0.1638 | 0.0134 | 0.1556 | 0.0097 | 0.1223   | 0.0185   | 871     | 0.9817  | 36.9  | FAIL
+MultiProtoCosine         | 0.0591 | 0.0071 | 0.0532 | 0.0097 | 0.0293   | 0.0096   | 871     | 0.8959  | 40.0  | PASS
+WeightedEnsemble         | 0.2654 | 0.0134 | 0.2637 | 0.0097 | 0.1989   | 0.0180   | 871     | 1.2607  | 77.5  | FAIL
+XGBoost                  | 0.2543 | 0.0142 | 0.2637 | 0.0097 | 0.1991   | 0.0201   | 871     | 0.8011  | 51.3  | FAIL
+LDA1+LogReg              | 0.2055 | 0.0142 | 0.1839 | 0.0097 | 0.1493   | 0.0166   | 871     | 0.5197  | 43.4  | FAIL
+PCA16+LogReg             | 0.1961 | 0.0118 | 0.1758 | 0.0097 | 0.1366   | 0.0146   | 871     | 0.5201  | 76.0  | FAIL
+PCA32+LogReg             | 0.1890 | 0.0118 | 0.1718 | 0.0097 | 0.1373   | 0.0146   | 871     | 0.5203  | 79.6  | FAIL
+PCA16+VecWeighted        | 0.0976 | 0.0094 | 0.0839 | 0.0097 | 0.0490   | 0.0100   | 871     | 0.0602  | 126.6 | PASS
+PCA32+VecWeighted        | 0.0898 | 0.0134 | 0.0734 | 0.0097 | 0.0506   | 0.0134   | 871     | 0.0627  | 89.8  | FAIL
+StabilizedWhitenedCosine | 0.3024 | 0.0165 | 0.2839 | 0.0097 | 0.2299   | 0.0191   | 871     | 1.4788  | 61.6  | FAIL
+
+[trial=5 seed=47] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=0.8073, Pooled external calib: TPR=0.2790, FPR=0.0097
+  PrecomputedCosine   : +0.0000
+  PCAWhitenedCosine   : +0.0000
+  XGBoost             : +1.0000
+  Tiny MLP            : +0.0000
+  LDA                 : +0.0000
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.2630 | 0.0071 | 0.2581 | 0.0097 | 0.2161   | 0.0097   | 852     | 0.9893  | 43.2 | PASS
+AndBox-HC                | 0.2126 | 0.0071 | 0.2266 | 0.0097 | 0.1819   | 0.0125   | 852     | 0.0000  | 41.9 | PASS
+PCAWhitenedCosine        | 0.2087 | 0.0024 | 0.1927 | 0.0097 | 0.1476   | 0.0014   | 852     | 1.8826  | 30.6 | PASS
+Vec (Wgt)                | 0.2661 | 0.0047 | 0.2750 | 0.0097 | 0.1899   | 0.0060   | 852     | 1.0050  | 30.5 | PASS
+Log Reg                  | 0.2165 | 0.0047 | 0.2161 | 0.0097 | 0.1431   | 0.0065   | 852     | 0.5200  | 36.6 | PASS
+LDA                      | 0.1976 | 0.0079 | 0.2137 | 0.0097 | 0.1450   | 0.0102   | 852     | 5.5759  | 32.9 | PASS
+Tiny MLP                 | 0.2220 | 0.0055 | 0.2347 | 0.0097 | 0.1572   | 0.0074   | 852     | 0.9844  | 34.5 | PASS
+MultiProtoCosine         | 0.0638 | 0.0157 | 0.0581 | 0.0097 | 0.0356   | 0.0110   | 852     | 0.8958  | 37.4 | FAIL
+WeightedEnsemble         | 0.2717 | 0.0087 | 0.2790 | 0.0097 | 0.2148   | 0.0142   | 852     | 0.8073  | 58.2 | PASS
+XGBoost                  | 0.2717 | 0.0087 | 0.2790 | 0.0097 | 0.2148   | 0.0142   | 852     | 0.8073  | 50.1 | PASS
+LDA1+LogReg              | 0.2157 | 0.0047 | 0.2129 | 0.0097 | 0.1412   | 0.0065   | 852     | 0.5202  | 34.0 | PASS
+PCA16+LogReg             | 0.2063 | 0.0047 | 0.2032 | 0.0097 | 0.1328   | 0.0065   | 852     | 0.5206  | 35.6 | PASS
+PCA32+LogReg             | 0.2102 | 0.0047 | 0.2048 | 0.0097 | 0.1386   | 0.0065   | 852     | 0.5204  | 36.6 | PASS
+PCA16+VecWeighted        | 0.0213 | 0.0055 | 0.0194 | 0.0097 | 0.0173   | 0.0073   | 852     | 0.0538  | 34.5 | PASS
+PCA32+VecWeighted        | 0.0276 | 0.0094 | 0.0323 | 0.0097 | 0.0222   | 0.0111   | 852     | 0.0577  | 35.3 | PASS
+StabilizedWhitenedCosine | 0.2339 | 0.0047 | 0.2097 | 0.0097 | 0.1644   | 0.0059   | 852     | 1.7091  | 33.8 | PASS
+
+[trial=6 seed=48] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.0336, Pooled external calib: TPR=0.2839, FPR=0.0097
+  PrecomputedCosine   : +0.4364
+  PCAWhitenedCosine   : +0.0571
+  XGBoost             : +0.1048
+  Tiny MLP            : +0.3819
+  LDA                 : +0.0199
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1984 | 0.0118 | 0.1782 | 0.0097 | 0.1647   | 0.0152   | 856     | 1.0000  | 56.4 | FAIL
+AndBox-HC                | 0.1646 | 0.0142 | 0.1702 | 0.0097 | 0.1565   | 0.0231   | 856     | 0.0000  | 33.4 | FAIL
+PCAWhitenedCosine        | 0.2142 | 0.0079 | 0.1911 | 0.0097 | 0.1695   | 0.0137   | 856     | 1.7081  | 30.1 | PASS
+Vec (Wgt)                | 0.2969 | 0.0110 | 0.2895 | 0.0097 | 0.2385   | 0.0159   | 856     | 0.9952  | 30.4 | FAIL
+Log Reg                  | 0.2031 | 0.0118 | 0.1887 | 0.0097 | 0.1309   | 0.0188   | 856     | 0.5198  | 36.4 | FAIL
+LDA                      | 0.1346 | 0.0071 | 0.1145 | 0.0097 | 0.1015   | 0.0125   | 856     | 5.7664  | 32.8 | PASS
+Tiny MLP                 | 0.2024 | 0.0110 | 0.1774 | 0.0097 | 0.1525   | 0.0194   | 856     | 0.9847  | 34.5 | FAIL
+MultiProtoCosine         | 0.0638 | 0.0173 | 0.0556 | 0.0097 | 0.0325   | 0.0113   | 856     | 0.8942  | 37.1 | FAIL
+WeightedEnsemble         | 0.3047 | 0.0126 | 0.2839 | 0.0097 | 0.2494   | 0.0219   | 856     | 1.0336  | 57.9 | FAIL
+XGBoost                  | 0.2134 | 0.0063 | 0.1863 | 0.0097 | 0.1551   | 0.0102   | 856     | 0.8115  | 51.3 | PASS
+LDA1+LogReg              | 0.2039 | 0.0118 | 0.1887 | 0.0097 | 0.1313   | 0.0188   | 856     | 0.5197  | 33.7 | FAIL
+PCA16+LogReg             | 0.2087 | 0.0126 | 0.1839 | 0.0097 | 0.1354   | 0.0194   | 856     | 0.5197  | 35.4 | FAIL
+PCA32+LogReg             | 0.2071 | 0.0118 | 0.1823 | 0.0097 | 0.1339   | 0.0188   | 856     | 0.5200  | 36.4 | FAIL
+PCA16+VecWeighted        | 0.0488 | 0.0039 | 0.0540 | 0.0097 | 0.0401   | 0.0050   | 856     | 0.0556  | 34.3 | PASS
+PCA32+VecWeighted        | 0.0598 | 0.0055 | 0.0540 | 0.0097 | 0.0484   | 0.0094   | 856     | 0.0591  | 34.9 | PASS
+StabilizedWhitenedCosine | 0.2866 | 0.0102 | 0.2589 | 0.0097 | 0.2075   | 0.0188   | 856     | 1.5307  | 33.6 | FAIL
+
+[trial=7 seed=49] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.2590, Pooled external calib: TPR=0.3290, FPR=0.0097
+  PrecomputedCosine   : +0.3246
+  PCAWhitenedCosine   : +0.1636
+  XGBoost             : +0.2291
+  Tiny MLP            : +0.2081
+  LDA                 : +0.0747
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1504 | 0.0094 | 0.1581 | 0.0113 | 0.1148   | 0.0128   | 868     | 1.0000  | 57.2 | PASS
+AndBox-HC                | 0.1811 | 0.0118 | 0.1742 | 0.0097 | 0.1459   | 0.0204   | 868     | 0.0000  | 33.4 | FAIL
+PCAWhitenedCosine        | 0.2354 | 0.0039 | 0.2226 | 0.0097 | 0.1568   | 0.0085   | 868     | 1.7177  | 30.7 | PASS
+Vec (Wgt)                | 0.2677 | 0.0071 | 0.2524 | 0.0097 | 0.1891   | 0.0114   | 868     | 1.0027  | 30.6 | PASS
+Log Reg                  | 0.1488 | 0.0071 | 0.1605 | 0.0097 | 0.0895   | 0.0107   | 868     | 0.5231  | 36.8 | PASS
+LDA                      | 0.2669 | 0.0189 | 0.2976 | 0.0097 | 0.1947   | 0.0250   | 868     | 5.0482  | 33.1 | FAIL
+Tiny MLP                 | 0.2709 | 0.0157 | 0.2815 | 0.0097 | 0.1865   | 0.0225   | 868     | 0.9638  | 34.9 | FAIL
+MultiProtoCosine         | 0.0449 | 0.0071 | 0.0565 | 0.0097 | 0.0284   | 0.0042   | 868     | 0.8971  | 37.2 | PASS
+WeightedEnsemble         | 0.3228 | 0.0134 | 0.3290 | 0.0097 | 0.2364   | 0.0202   | 868     | 1.2590  | 58.5 | FAIL
+XGBoost                  | 0.3008 | 0.0118 | 0.2927 | 0.0097 | 0.2122   | 0.0156   | 868     | 0.7836  | 50.6 | FAIL
+LDA1+LogReg              | 0.1488 | 0.0071 | 0.1565 | 0.0097 | 0.0895   | 0.0107   | 868     | 0.5230  | 34.4 | PASS
+PCA16+LogReg             | 0.1457 | 0.0071 | 0.1516 | 0.0097 | 0.0839   | 0.0107   | 868     | 0.5222  | 36.2 | PASS
+PCA32+LogReg             | 0.1504 | 0.0063 | 0.1540 | 0.0097 | 0.0881   | 0.0090   | 868     | 0.5220  | 37.0 | PASS
+PCA16+VecWeighted        | 0.0496 | 0.0063 | 0.0444 | 0.0097 | 0.0392   | 0.0136   | 868     | 0.0637  | 34.9 | PASS
+PCA32+VecWeighted        | 0.0417 | 0.0110 | 0.0427 | 0.0097 | 0.0371   | 0.0158   | 868     | 0.0686  | 35.5 | FAIL
+StabilizedWhitenedCosine | 0.2614 | 0.0094 | 0.2621 | 0.0097 | 0.1824   | 0.0145   | 868     | 1.5299  | 35.5 | PASS
+
+[trial=8 seed=50] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=0.8045, Pooled external calib: TPR=0.2839, FPR=0.0097
+  PrecomputedCosine   : +0.0000
+  PCAWhitenedCosine   : +0.0000
+  XGBoost             : +1.0000
+  Tiny MLP            : +0.0000
+  LDA                 : +0.0000
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.2142 | 0.0110 | 0.1935 | 0.0089 | 0.1668   | 0.0145   | 859     | 1.0000  | 29.0 | FAIL
+AndBox-HC                | 0.1457 | 0.0063 | 0.1524 | 0.0097 | 0.1298   | 0.0107   | 859     | 0.0001  | 31.8 | PASS
+PCAWhitenedCosine        | 0.1835 | 0.0031 | 0.1685 | 0.0097 | 0.1420   | 0.0052   | 859     | 1.8538  | 30.1 | PASS
+Vec (Wgt)                | 0.3031 | 0.0087 | 0.2839 | 0.0097 | 0.2236   | 0.0128   | 859     | 1.0025  | 29.9 | PASS
+Log Reg                  | 0.1591 | 0.0079 | 0.1653 | 0.0097 | 0.1090   | 0.0115   | 859     | 0.5215  | 40.5 | PASS
+LDA                      | 0.1488 | 0.0055 | 0.1508 | 0.0097 | 0.1323   | 0.0110   | 859     | 5.8693  | 58.8 | PASS
+Tiny MLP                 | 0.1882 | 0.0055 | 0.1863 | 0.0097 | 0.1419   | 0.0110   | 859     | 0.9846  | 38.0 | PASS
+MultiProtoCosine         | 0.0354 | 0.0031 | 0.0476 | 0.0097 | 0.0198   | 0.0032   | 859     | 0.9034  | 35.9 | PASS
+WeightedEnsemble         | 0.3031 | 0.0102 | 0.2839 | 0.0097 | 0.2282   | 0.0160   | 859     | 0.8045  | 57.7 | FAIL
+XGBoost                  | 0.3031 | 0.0102 | 0.2839 | 0.0097 | 0.2282   | 0.0160   | 859     | 0.8045  | 49.6 | FAIL
+LDA1+LogReg              | 0.1591 | 0.0087 | 0.1661 | 0.0097 | 0.1072   | 0.0124   | 859     | 0.5226  | 32.9 | PASS
+PCA16+LogReg             | 0.1551 | 0.0087 | 0.1613 | 0.0097 | 0.1063   | 0.0124   | 859     | 0.5217  | 34.8 | PASS
+PCA32+LogReg             | 0.1630 | 0.0094 | 0.1677 | 0.0097 | 0.1121   | 0.0141   | 859     | 0.5209  | 36.0 | PASS
+PCA16+VecWeighted        | 0.0220 | 0.0094 | 0.0153 | 0.0097 | 0.0160   | 0.0128   | 859     | 0.0594  | 33.6 | PASS
+PCA32+VecWeighted        | 0.0228 | 0.0110 | 0.0177 | 0.0097 | 0.0136   | 0.0118   | 859     | 0.0618  | 34.5 | FAIL
+StabilizedWhitenedCosine | 0.2638 | 0.0031 | 0.2500 | 0.0097 | 0.2008   | 0.0061   | 859     | 1.6635  | 33.1 | PASS
+
+[trial=9 seed=51] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.9941, Pooled external calib: TPR=0.2855, FPR=0.0097
+  PrecomputedCosine   : +0.1108
+  PCAWhitenedCosine   : +0.3385
+  XGBoost             : +0.2247
+  Tiny MLP            : +0.1228
+  LDA                 : +0.2032
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1890 | 0.0126 | 0.2024 | 0.0089 | 0.1506   | 0.0212   | 870     | 1.0000  | 48.9 | FAIL
+AndBox-HC                | 0.1528 | 0.0157 | 0.1556 | 0.0097 | 0.1373   | 0.0271   | 870     | 0.0000  | 33.3 | FAIL
+PCAWhitenedCosine        | 0.2323 | 0.0102 | 0.2411 | 0.0097 | 0.1593   | 0.0176   | 870     | 1.6991  | 30.6 | FAIL
+Vec (Wgt)                | 0.2811 | 0.0142 | 0.3000 | 0.0097 | 0.1997   | 0.0274   | 870     | 0.9994  | 30.3 | FAIL
+Log Reg                  | 0.1094 | 0.0031 | 0.1048 | 0.0097 | 0.0703   | 0.0062   | 870     | 0.5299  | 36.3 | PASS
+LDA                      | 0.2000 | 0.0134 | 0.2016 | 0.0097 | 0.1520   | 0.0193   | 870     | 5.8246  | 37.2 | FAIL
+Tiny MLP                 | 0.2260 | 0.0087 | 0.2274 | 0.0097 | 0.1598   | 0.0138   | 870     | 0.9759  | 43.7 | PASS
+MultiProtoCosine         | 0.0181 | 0.0071 | 0.0298 | 0.0097 | 0.0128   | 0.0073   | 870     | 0.9095  | 43.8 | PASS
+WeightedEnsemble         | 0.2709 | 0.0150 | 0.2855 | 0.0097 | 0.1980   | 0.0228   | 870     | 1.9941  | 65.3 | FAIL
+XGBoost                  | 0.2323 | 0.0079 | 0.2589 | 0.0097 | 0.1784   | 0.0159   | 870     | 0.8185  | 50.1 | PASS
+LDA1+LogReg              | 0.1094 | 0.0031 | 0.1032 | 0.0097 | 0.0703   | 0.0062   | 870     | 0.5297  | 33.5 | PASS
+PCA16+LogReg             | 0.1094 | 0.0024 | 0.1040 | 0.0097 | 0.0702   | 0.0053   | 870     | 0.5285  | 35.5 | PASS
+PCA32+LogReg             | 0.1110 | 0.0031 | 0.1081 | 0.0097 | 0.0728   | 0.0062   | 870     | 0.5280  | 36.5 | PASS
+PCA16+VecWeighted        | 0.0047 | 0.0118 | 0.0097 | 0.0097 | 0.0069   | 0.0099   | 870     | 0.0527  | 34.4 | FAIL
+PCA32+VecWeighted        | 0.0118 | 0.0197 | 0.0089 | 0.0097 | 0.0189   | 0.0181   | 870     | 0.0523  | 35.1 | FAIL
+StabilizedWhitenedCosine | 0.2291 | 0.0055 | 0.2347 | 0.0097 | 0.1504   | 0.0115   | 870     | 1.6514  | 33.6 | PASS
+
+[trial=10 seed=52] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.1421, Pooled external calib: TPR=0.3210, FPR=0.0097
+  PrecomputedCosine   : +0.2832
+  PCAWhitenedCosine   : +0.0456
+  XGBoost             : +0.2004
+  Tiny MLP            : +0.4151
+  LDA                 : +0.0558
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1732 | 0.0110 | 0.1863 | 0.0097 | 0.1485   | 0.0128   | 861     | 1.0000  | 30.8 | FAIL
+AndBox-HC                | 0.1961 | 0.0110 | 0.1952 | 0.0097 | 0.1537   | 0.0169   | 861     | 0.0000  | 33.7 | FAIL
+PCAWhitenedCosine        | 0.1976 | 0.0063 | 0.2048 | 0.0097 | 0.1479   | 0.0118   | 861     | 1.7817  | 30.5 | PASS
+Vec (Wgt)                | 0.3173 | 0.0189 | 0.3177 | 0.0097 | 0.2440   | 0.0255   | 861     | 0.9849  | 30.7 | FAIL
+Log Reg                  | 0.2449 | 0.0142 | 0.2395 | 0.0097 | 0.1757   | 0.0218   | 861     | 0.5175  | 36.6 | FAIL
+LDA                      | 0.1433 | 0.0094 | 0.1629 | 0.0097 | 0.1177   | 0.0168   | 861     | 5.7835  | 32.7 | PASS
+Tiny MLP                 | 0.2205 | 0.0126 | 0.2452 | 0.0097 | 0.1716   | 0.0210   | 861     | 0.9733  | 35.3 | FAIL
+MultiProtoCosine         | 0.0480 | 0.0055 | 0.0653 | 0.0097 | 0.0279   | 0.0068   | 861     | 0.8912  | 37.8 | PASS
+WeightedEnsemble         | 0.3205 | 0.0142 | 0.3210 | 0.0097 | 0.2484   | 0.0230   | 861     | 1.1421  | 59.0 | FAIL
+XGBoost                  | 0.2772 | 0.0150 | 0.2960 | 0.0097 | 0.2357   | 0.0192   | 861     | 0.7975  | 52.0 | FAIL
+LDA1+LogReg              | 0.2402 | 0.0142 | 0.2371 | 0.0097 | 0.1735   | 0.0218   | 861     | 0.5176  | 41.5 | FAIL
+PCA16+LogReg             | 0.2354 | 0.0134 | 0.2315 | 0.0097 | 0.1717   | 0.0210   | 861     | 0.5179  | 41.0 | FAIL
+PCA32+LogReg             | 0.2339 | 0.0134 | 0.2331 | 0.0097 | 0.1707   | 0.0210   | 861     | 0.5180  | 40.3 | FAIL
+PCA16+VecWeighted        | 0.0331 | 0.0134 | 0.0363 | 0.0097 | 0.0322   | 0.0123   | 861     | 0.0662  | 38.1 | FAIL
+PCA32+VecWeighted        | 0.0252 | 0.0142 | 0.0242 | 0.0097 | 0.0300   | 0.0156   | 861     | 0.0686  | 35.1 | FAIL
+StabilizedWhitenedCosine | 0.2323 | 0.0102 | 0.2589 | 0.0097 | 0.1735   | 0.0157   | 861     | 1.6094  | 37.0 | FAIL
+
+[trial=11 seed=53] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.1174, Pooled external calib: TPR=0.3040, FPR=0.0097
+  PrecomputedCosine   : +0.1369
+  PCAWhitenedCosine   : +0.3322
+  XGBoost             : +0.4468
+  Tiny MLP            : +0.0732
+  LDA                 : +0.0110
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms    | OK? 
+---------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1559 | 0.0055 | 0.1750 | 0.0097 | 0.1202   | 0.0074   | 861     | 1.0000  | 61.0  | PASS
+AndBox-HC                | 0.2071 | 0.0118 | 0.2331 | 0.0097 | 0.1543   | 0.0163   | 861     | -0.0000 | 45.6  | FAIL
+PCAWhitenedCosine        | 0.2732 | 0.0071 | 0.2968 | 0.0097 | 0.1987   | 0.0142   | 861     | 1.6031  | 39.6  | PASS
+Vec (Wgt)                | 0.2614 | 0.0079 | 0.2935 | 0.0097 | 0.1853   | 0.0115   | 861     | 1.0068  | 31.9  | PASS
+Log Reg                  | 0.1921 | 0.0110 | 0.1871 | 0.0089 | 0.1398   | 0.0166   | 861     | 0.5214  | 62.8  | FAIL
+LDA                      | 0.1701 | 0.0024 | 0.1895 | 0.0097 | 0.1310   | 0.0036   | 861     | 5.4789  | 49.0  | PASS
+Tiny MLP                 | 0.2079 | 0.0079 | 0.2194 | 0.0097 | 0.1469   | 0.0130   | 861     | 0.9822  | 61.8  | PASS
+MultiProtoCosine         | 0.0543 | 0.0079 | 0.0581 | 0.0097 | 0.0364   | 0.0071   | 861     | 0.8926  | 97.5  | PASS
+WeightedEnsemble         | 0.2866 | 0.0071 | 0.3040 | 0.0097 | 0.2127   | 0.0142   | 861     | 1.1174  | 160.7 | PASS
+XGBoost                  | 0.1992 | 0.0039 | 0.1927 | 0.0097 | 0.1348   | 0.0051   | 861     | 0.8244  | 51.6  | PASS
+LDA1+LogReg              | 0.1882 | 0.0110 | 0.1871 | 0.0097 | 0.1372   | 0.0166   | 861     | 0.5216  | 77.7  | FAIL
+PCA16+LogReg             | 0.1827 | 0.0102 | 0.1774 | 0.0097 | 0.1337   | 0.0149   | 861     | 0.5218  | 88.8  | FAIL
+PCA32+LogReg             | 0.1858 | 0.0110 | 0.1879 | 0.0097 | 0.1355   | 0.0154   | 861     | 0.5217  | 60.2  | FAIL
+PCA16+VecWeighted        | 0.0205 | 0.0079 | 0.0306 | 0.0097 | 0.0235   | 0.0095   | 861     | 0.0596  | 39.5  | PASS
+PCA32+VecWeighted        | 0.0213 | 0.0087 | 0.0266 | 0.0097 | 0.0162   | 0.0119   | 861     | 0.0713  | 45.9  | PASS
+StabilizedWhitenedCosine | 0.2378 | 0.0047 | 0.2516 | 0.0097 | 0.1681   | 0.0087   | 861     | 1.7166  | 50.0  | PASS
+
+[trial=12 seed=54] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.2531, Pooled external calib: TPR=0.3379, FPR=0.0097
+  PrecomputedCosine   : +0.6579
+  PCAWhitenedCosine   : +0.1446
+  XGBoost             : +0.0673
+  Tiny MLP            : +0.0713
+  LDA                 : +0.0589
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.2520 | 0.0094 | 0.2573 | 0.0097 | 0.2074   | 0.0106   | 850     | 0.9903  | 55.4 | PASS
+AndBox-HC                | 0.1220 | 0.0047 | 0.1194 | 0.0097 | 0.1198   | 0.0046   | 850     | 0.0001  | 33.1 | PASS
+PCAWhitenedCosine        | 0.2039 | 0.0079 | 0.2298 | 0.0097 | 0.1496   | 0.0112   | 850     | 1.7658  | 30.0 | PASS
+Vec (Wgt)                | 0.3016 | 0.0047 | 0.2952 | 0.0097 | 0.2144   | 0.0091   | 850     | 0.9994  | 29.8 | PASS
+Log Reg                  | 0.1921 | 0.0063 | 0.1887 | 0.0097 | 0.1228   | 0.0126   | 850     | 0.5220  | 36.1 | PASS
+LDA                      | 0.2433 | 0.0110 | 0.2815 | 0.0097 | 0.1782   | 0.0153   | 850     | 5.4329  | 32.3 | FAIL
+Tiny MLP                 | 0.2598 | 0.0110 | 0.3056 | 0.0097 | 0.1935   | 0.0166   | 850     | 0.9741  | 33.9 | FAIL
+MultiProtoCosine         | 0.0331 | 0.0087 | 0.0476 | 0.0097 | 0.0186   | 0.0065   | 850     | 0.9067  | 36.6 | PASS
+WeightedEnsemble         | 0.3165 | 0.0118 | 0.3379 | 0.0097 | 0.2303   | 0.0170   | 850     | 1.2531  | 57.4 | FAIL
+XGBoost                  | 0.2520 | 0.0071 | 0.2492 | 0.0097 | 0.1909   | 0.0080   | 850     | 0.8208  | 49.3 | PASS
+LDA1+LogReg              | 0.1921 | 0.0063 | 0.1887 | 0.0097 | 0.1228   | 0.0126   | 850     | 0.5220  | 32.9 | PASS
+PCA16+LogReg             | 0.1945 | 0.0063 | 0.1903 | 0.0097 | 0.1286   | 0.0126   | 850     | 0.5219  | 34.8 | PASS
+PCA32+LogReg             | 0.1937 | 0.0063 | 0.1895 | 0.0097 | 0.1235   | 0.0126   | 850     | 0.5219  | 35.8 | PASS
+PCA16+VecWeighted        | 0.0252 | 0.0063 | 0.0258 | 0.0097 | 0.0236   | 0.0084   | 850     | 0.0590  | 33.6 | PASS
+PCA32+VecWeighted        | 0.0236 | 0.0016 | 0.0258 | 0.0097 | 0.0221   | 0.0035   | 850     | 0.0684  | 34.4 | PASS
+StabilizedWhitenedCosine | 0.2142 | 0.0055 | 0.2153 | 0.0097 | 0.1569   | 0.0072   | 850     | 1.7476  | 33.5 | PASS
+
+[trial=13 seed=55] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.5770, Pooled external calib: TPR=0.3056, FPR=0.0097
+  PrecomputedCosine   : +0.0000
+  PCAWhitenedCosine   : +1.0000
+  XGBoost             : +0.0000
+  Tiny MLP            : +0.0000
+  LDA                 : +0.0000
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.2709 | 0.0165 | 0.2661 | 0.0097 | 0.2113   | 0.0273   | 864     | 0.9878  | 28.9 | FAIL
+AndBox-HC                | 0.1622 | 0.0094 | 0.1565 | 0.0097 | 0.1227   | 0.0128   | 864     | 0.0000  | 31.4 | PASS
+PCAWhitenedCosine        | 0.3087 | 0.0134 | 0.3056 | 0.0097 | 0.2208   | 0.0237   | 864     | 1.5770  | 30.9 | FAIL
+Vec (Wgt)                | 0.3283 | 0.0150 | 0.3282 | 0.0097 | 0.2389   | 0.0260   | 864     | 0.9892  | 30.1 | FAIL
+Log Reg                  | 0.2283 | 0.0087 | 0.2387 | 0.0097 | 0.1507   | 0.0127   | 864     | 0.5183  | 36.1 | PASS
+LDA                      | 0.2583 | 0.0157 | 0.2581 | 0.0097 | 0.1861   | 0.0246   | 864     | 5.1272  | 32.5 | FAIL
+Tiny MLP                 | 0.2559 | 0.0134 | 0.2411 | 0.0097 | 0.1817   | 0.0197   | 864     | 0.9853  | 34.1 | FAIL
+MultiProtoCosine         | 0.0378 | 0.0079 | 0.0508 | 0.0097 | 0.0239   | 0.0065   | 864     | 0.8944  | 36.5 | PASS
+WeightedEnsemble         | 0.3087 | 0.0134 | 0.3056 | 0.0097 | 0.2208   | 0.0237   | 864     | 1.5770  | 57.8 | FAIL
+XGBoost                  | 0.2378 | 0.0126 | 0.2347 | 0.0097 | 0.1734   | 0.0207   | 864     | 0.8045  | 50.0 | FAIL
+LDA1+LogReg              | 0.2252 | 0.0087 | 0.2379 | 0.0097 | 0.1481   | 0.0127   | 864     | 0.5185  | 33.4 | PASS
+PCA16+LogReg             | 0.2110 | 0.0063 | 0.2218 | 0.0097 | 0.1408   | 0.0075   | 864     | 0.5188  | 35.0 | PASS
+PCA32+LogReg             | 0.2102 | 0.0063 | 0.2202 | 0.0097 | 0.1411   | 0.0075   | 864     | 0.5188  | 36.1 | PASS
+PCA16+VecWeighted        | 0.0323 | 0.0071 | 0.0331 | 0.0097 | 0.0206   | 0.0055   | 864     | 0.0633  | 33.7 | PASS
+PCA32+VecWeighted        | 0.0299 | 0.0102 | 0.0290 | 0.0097 | 0.0206   | 0.0099   | 864     | 0.0662  | 34.6 | FAIL
+StabilizedWhitenedCosine | 0.2528 | 0.0094 | 0.2331 | 0.0097 | 0.1718   | 0.0159   | 864     | 1.6726  | 33.6 | PASS
+
+[trial=14 seed=56] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.3107, Pooled external calib: TPR=0.2968, FPR=0.0097
+  PrecomputedCosine   : +0.2161
+  PCAWhitenedCosine   : +0.5478
+  XGBoost             : +0.0972
+  Tiny MLP            : +0.1269
+  LDA                 : +0.0120
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1598 | 0.0134 | 0.1540 | 0.0089 | 0.1257   | 0.0195   | 860     | 1.0000  | 57.0 | FAIL
+AndBox-HC                | 0.1685 | 0.0134 | 0.1790 | 0.0097 | 0.1339   | 0.0233   | 860     | 0.0001  | 33.4 | FAIL
+PCAWhitenedCosine        | 0.3165 | 0.0134 | 0.2911 | 0.0097 | 0.2332   | 0.0190   | 860     | 1.5686  | 30.4 | FAIL
+Vec (Wgt)                | 0.2157 | 0.0071 | 0.2266 | 0.0097 | 0.1536   | 0.0099   | 860     | 1.0146  | 30.5 | PASS
+Log Reg                  | 0.1244 | 0.0024 | 0.1129 | 0.0097 | 0.0702   | 0.0025   | 860     | 0.5259  | 36.5 | PASS
+LDA                      | 0.0622 | 0.0079 | 0.0742 | 0.0097 | 0.0563   | 0.0121   | 860     | 6.3215  | 33.2 | PASS
+Tiny MLP                 | 0.1654 | 0.0087 | 0.1653 | 0.0097 | 0.1197   | 0.0120   | 860     | 0.9921  | 35.8 | PASS
+MultiProtoCosine         | 0.0441 | 0.0094 | 0.0476 | 0.0097 | 0.0259   | 0.0067   | 860     | 0.9037  | 37.1 | PASS
+WeightedEnsemble         | 0.3307 | 0.0134 | 0.2968 | 0.0097 | 0.2453   | 0.0190   | 860     | 1.3107  | 58.1 | FAIL
+XGBoost                  | 0.1937 | 0.0102 | 0.2016 | 0.0097 | 0.1408   | 0.0159   | 860     | 0.8203  | 50.2 | FAIL
+LDA1+LogReg              | 0.1252 | 0.0024 | 0.1137 | 0.0097 | 0.0722   | 0.0025   | 860     | 0.5257  | 33.5 | PASS
+PCA16+LogReg             | 0.1283 | 0.0031 | 0.1202 | 0.0097 | 0.0754   | 0.0028   | 860     | 0.5245  | 35.3 | PASS
+PCA32+LogReg             | 0.1299 | 0.0031 | 0.1194 | 0.0097 | 0.0774   | 0.0028   | 860     | 0.5245  | 36.3 | PASS
+PCA16+VecWeighted        | 0.0378 | 0.0063 | 0.0339 | 0.0097 | 0.0330   | 0.0064   | 860     | 0.0453  | 34.1 | PASS
+PCA32+VecWeighted        | 0.0535 | 0.0102 | 0.0452 | 0.0097 | 0.0338   | 0.0125   | 860     | 0.0509  | 35.8 | FAIL
+StabilizedWhitenedCosine | 0.2087 | 0.0071 | 0.2129 | 0.0097 | 0.1548   | 0.0108   | 860     | 1.6425  | 33.9 | PASS
+
+[trial=15 seed=57] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.3466, Pooled external calib: TPR=0.2766, FPR=0.0097
+  PrecomputedCosine   : +0.1298
+  PCAWhitenedCosine   : +0.1391
+  XGBoost             : +0.2872
+  Tiny MLP            : +0.3596
+  LDA                 : +0.0844
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1646 | 0.0102 | 0.1629 | 0.0121 | 0.1234   | 0.0130   | 841     | 1.0000  | 29.5 | FAIL
+AndBox-HC                | 0.1559 | 0.0079 | 0.1460 | 0.0097 | 0.1276   | 0.0089   | 841     | 0.0000  | 31.5 | PASS
+PCAWhitenedCosine        | 0.2094 | 0.0063 | 0.2089 | 0.0097 | 0.1432   | 0.0116   | 841     | 1.8147  | 29.7 | PASS
+Vec (Wgt)                | 0.2827 | 0.0126 | 0.2758 | 0.0097 | 0.2113   | 0.0213   | 841     | 1.0039  | 29.5 | FAIL
+Log Reg                  | 0.1953 | 0.0118 | 0.1847 | 0.0097 | 0.1235   | 0.0160   | 841     | 0.5203  | 35.8 | FAIL
+LDA                      | 0.2268 | 0.0189 | 0.2097 | 0.0097 | 0.1719   | 0.0289   | 841     | 5.4363  | 31.9 | FAIL
+Tiny MLP                 | 0.2244 | 0.0165 | 0.2121 | 0.0097 | 0.1651   | 0.0243   | 841     | 0.9905  | 34.1 | FAIL
+MultiProtoCosine         | 0.0661 | 0.0142 | 0.0629 | 0.0097 | 0.0321   | 0.0153   | 841     | 0.8906  | 36.2 | FAIL
+WeightedEnsemble         | 0.2937 | 0.0173 | 0.2766 | 0.0097 | 0.2015   | 0.0263   | 841     | 1.3466  | 57.3 | FAIL
+XGBoost                  | 0.2354 | 0.0102 | 0.2097 | 0.0097 | 0.1725   | 0.0162   | 841     | 0.8197  | 52.7 | FAIL
+LDA1+LogReg              | 0.1945 | 0.0118 | 0.1847 | 0.0097 | 0.1229   | 0.0160   | 841     | 0.5204  | 34.0 | FAIL
+PCA16+LogReg             | 0.1913 | 0.0110 | 0.1766 | 0.0097 | 0.1255   | 0.0142   | 841     | 0.5206  | 38.6 | FAIL
+PCA32+LogReg             | 0.1866 | 0.0110 | 0.1766 | 0.0097 | 0.1227   | 0.0142   | 841     | 0.5207  | 38.8 | FAIL
+PCA16+VecWeighted        | 0.0134 | 0.0110 | 0.0169 | 0.0097 | 0.0130   | 0.0124   | 841     | 0.0643  | 36.6 | FAIL
+PCA32+VecWeighted        | 0.0244 | 0.0079 | 0.0323 | 0.0097 | 0.0154   | 0.0062   | 841     | 0.0679  | 34.2 | PASS
+StabilizedWhitenedCosine | 0.2559 | 0.0102 | 0.2476 | 0.0097 | 0.1657   | 0.0174   | 841     | 1.7018  | 33.1 | FAIL
+
+[trial=16 seed=58] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.0892, Pooled external calib: TPR=0.2823, FPR=0.0097
+  PrecomputedCosine   : +0.2610
+  PCAWhitenedCosine   : +0.2348
+  XGBoost             : +0.2127
+  Tiny MLP            : +0.2846
+  LDA                 : +0.0070
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1850 | 0.0150 | 0.1645 | 0.0089 | 0.1314   | 0.0203   | 869     | 1.0000  | 30.6 | FAIL
+AndBox-HC                | 0.1409 | 0.0071 | 0.1202 | 0.0097 | 0.1046   | 0.0123   | 869     | 0.0001  | 44.4 | PASS
+PCAWhitenedCosine        | 0.2512 | 0.0055 | 0.2242 | 0.0097 | 0.1685   | 0.0111   | 869     | 1.7151  | 30.2 | PASS
+Vec (Wgt)                | 0.3236 | 0.0110 | 0.2734 | 0.0097 | 0.2252   | 0.0170   | 869     | 1.0022  | 30.7 | FAIL
+Log Reg                  | 0.2496 | 0.0150 | 0.2427 | 0.0097 | 0.1631   | 0.0254   | 869     | 0.5177  | 36.6 | FAIL
+LDA                      | 0.0858 | 0.0024 | 0.0903 | 0.0097 | 0.0715   | 0.0030   | 869     | 6.2406  | 32.8 | PASS
+Tiny MLP                 | 0.1630 | 0.0024 | 0.1758 | 0.0097 | 0.1041   | 0.0038   | 869     | 0.9871  | 34.4 | PASS
+MultiProtoCosine         | 0.0591 | 0.0094 | 0.0556 | 0.0097 | 0.0338   | 0.0120   | 869     | 0.8978  | 36.9 | PASS
+WeightedEnsemble         | 0.3008 | 0.0063 | 0.2823 | 0.0097 | 0.2032   | 0.0115   | 869     | 1.0892  | 63.1 | PASS
+XGBoost                  | 0.1843 | 0.0055 | 0.1734 | 0.0097 | 0.1278   | 0.0062   | 869     | 0.8164  | 51.5 | PASS
+LDA1+LogReg              | 0.2591 | 0.0165 | 0.2532 | 0.0097 | 0.1747   | 0.0277   | 869     | 0.5172  | 41.2 | FAIL
+PCA16+LogReg             | 0.2472 | 0.0150 | 0.2371 | 0.0097 | 0.1618   | 0.0241   | 869     | 0.5181  | 42.3 | FAIL
+PCA32+LogReg             | 0.2457 | 0.0142 | 0.2363 | 0.0097 | 0.1612   | 0.0237   | 869     | 0.5183  | 37.2 | FAIL
+PCA16+VecWeighted        | 0.0693 | 0.0063 | 0.0621 | 0.0097 | 0.0455   | 0.0119   | 869     | 0.0645  | 34.0 | PASS
+PCA32+VecWeighted        | 0.0827 | 0.0055 | 0.0774 | 0.0097 | 0.0613   | 0.0090   | 869     | 0.0659  | 34.7 | PASS
+StabilizedWhitenedCosine | 0.2543 | 0.0055 | 0.2403 | 0.0097 | 0.1836   | 0.0074   | 869     | 1.6003  | 33.9 | PASS
+
+[trial=17 seed=59] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=0.8018, Pooled external calib: TPR=0.2411, FPR=0.0097
+  PrecomputedCosine   : +0.0000
+  PCAWhitenedCosine   : +0.0000
+  XGBoost             : +1.0000
+  Tiny MLP            : +0.0000
+  LDA                 : +0.0000
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1685 | 0.0079 | 0.1500 | 0.0105 | 0.1334   | 0.0114   | 862     | 1.0000  | 40.4 | PASS
+AndBox-HC                | 0.1795 | 0.0094 | 0.1952 | 0.0097 | 0.1546   | 0.0107   | 862     | 0.0000  | 34.4 | PASS
+PCAWhitenedCosine        | 0.1362 | 0.0047 | 0.1500 | 0.0097 | 0.0877   | 0.0088   | 862     | 2.0283  | 32.0 | PASS
+Vec (Wgt)                | 0.2953 | 0.0110 | 0.3177 | 0.0097 | 0.2242   | 0.0200   | 862     | 0.9938  | 49.3 | FAIL
+Log Reg                  | 0.2661 | 0.0173 | 0.2629 | 0.0097 | 0.1847   | 0.0292   | 862     | 0.5160  | 42.7 | FAIL
+LDA                      | 0.1772 | 0.0118 | 0.1919 | 0.0097 | 0.1335   | 0.0167   | 862     | 5.5416  | 47.3 | FAIL
+Tiny MLP                 | 0.1669 | 0.0087 | 0.1806 | 0.0097 | 0.1215   | 0.0154   | 862     | 0.9877  | 49.6 | PASS
+MultiProtoCosine         | 0.0583 | 0.0031 | 0.0532 | 0.0097 | 0.0294   | 0.0028   | 862     | 0.8956  | 55.6 | PASS
+WeightedEnsemble         | 0.2220 | 0.0094 | 0.2411 | 0.0097 | 0.1834   | 0.0150   | 862     | 0.8018  | 86.6 | PASS
+XGBoost                  | 0.2220 | 0.0094 | 0.2411 | 0.0097 | 0.1834   | 0.0150   | 862     | 0.8018  | 59.5 | PASS
+LDA1+LogReg              | 0.2646 | 0.0173 | 0.2597 | 0.0097 | 0.1834   | 0.0292   | 862     | 0.5161  | 45.6 | FAIL
+PCA16+LogReg             | 0.2496 | 0.0126 | 0.2387 | 0.0097 | 0.1740   | 0.0213   | 862     | 0.5171  | 38.4 | FAIL
+PCA32+LogReg             | 0.2591 | 0.0142 | 0.2500 | 0.0097 | 0.1803   | 0.0239   | 862     | 0.5168  | 54.6 | FAIL
+PCA16+VecWeighted        | 0.0283 | 0.0094 | 0.0363 | 0.0097 | 0.0245   | 0.0116   | 862     | 0.0635  | 35.8 | PASS
+PCA32+VecWeighted        | 0.0291 | 0.0134 | 0.0323 | 0.0097 | 0.0223   | 0.0119   | 862     | 0.0735  | 37.6 | FAIL
+StabilizedWhitenedCosine | 0.2331 | 0.0094 | 0.2419 | 0.0097 | 0.1674   | 0.0134   | 862     | 1.6309  | 68.2 | PASS
+
+[trial=18 seed=60] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=0.7976, Pooled external calib: TPR=0.2798, FPR=0.0097
+  PrecomputedCosine   : +0.0000
+  PCAWhitenedCosine   : +0.0000
+  XGBoost             : +1.0000
+  Tiny MLP            : +0.0000
+  LDA                 : +0.0000
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1740 | 0.0094 | 0.1742 | 0.0097 | 0.1363   | 0.0141   | 837     | 1.0000  | 28.8 | PASS
+AndBox-HC                | 0.1559 | 0.0055 | 0.1452 | 0.0097 | 0.1415   | 0.0092   | 837     | 0.0001  | 31.3 | PASS
+PCAWhitenedCosine        | 0.2913 | 0.0150 | 0.2548 | 0.0097 | 0.2215   | 0.0231   | 837     | 1.5970  | 30.3 | FAIL
+Vec (Wgt)                | 0.2906 | 0.0134 | 0.2726 | 0.0097 | 0.2304   | 0.0252   | 837     | 0.9970  | 29.7 | FAIL
+Log Reg                  | 0.1709 | 0.0110 | 0.1702 | 0.0097 | 0.1145   | 0.0161   | 837     | 0.5206  | 35.7 | FAIL
+LDA                      | 0.1701 | 0.0087 | 0.1597 | 0.0097 | 0.1286   | 0.0138   | 837     | 5.7794  | 32.2 | PASS
+Tiny MLP                 | 0.1701 | 0.0079 | 0.1605 | 0.0097 | 0.1287   | 0.0126   | 837     | 0.9817  | 34.4 | PASS
+MultiProtoCosine         | 0.0630 | 0.0165 | 0.0556 | 0.0097 | 0.0357   | 0.0169   | 837     | 0.8992  | 36.4 | FAIL
+WeightedEnsemble         | 0.3016 | 0.0157 | 0.2798 | 0.0097 | 0.2433   | 0.0218   | 837     | 0.7976  | 57.8 | FAIL
+XGBoost                  | 0.3016 | 0.0157 | 0.2798 | 0.0097 | 0.2433   | 0.0218   | 837     | 0.7976  | 49.3 | FAIL
+LDA1+LogReg              | 0.1756 | 0.0110 | 0.1710 | 0.0097 | 0.1166   | 0.0161   | 837     | 0.5203  | 32.8 | FAIL
+PCA16+LogReg             | 0.1669 | 0.0087 | 0.1661 | 0.0097 | 0.1119   | 0.0140   | 837     | 0.5208  | 34.6 | PASS
+PCA32+LogReg             | 0.1646 | 0.0079 | 0.1645 | 0.0097 | 0.1104   | 0.0135   | 837     | 0.5211  | 37.0 | PASS
+PCA16+VecWeighted        | 0.0079 | 0.0134 | 0.0105 | 0.0097 | 0.0064   | 0.0123   | 837     | 0.0530  | 33.5 | FAIL
+PCA32+VecWeighted        | 0.0157 | 0.0213 | 0.0169 | 0.0097 | 0.0126   | 0.0070   | 837     | 0.0641  | 34.4 | FAIL
+StabilizedWhitenedCosine | 0.2827 | 0.0150 | 0.2766 | 0.0097 | 0.2183   | 0.0195   | 837     | 1.4719  | 32.9 | FAIL
+
+[trial=19 seed=61] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.0422, Pooled external calib: TPR=0.3040, FPR=0.0097
+  PrecomputedCosine   : +0.4364
+  PCAWhitenedCosine   : +0.0571
+  XGBoost             : +0.1048
+  Tiny MLP            : +0.3819
+  LDA                 : +0.0199
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1661 | 0.0134 | 0.1661 | 0.0113 | 0.1230   | 0.0190   | 852     | 1.0000  | 43.1 | FAIL
+AndBox-HC                | 0.1220 | 0.0118 | 0.1258 | 0.0097 | 0.1071   | 0.0193   | 852     | 0.0000  | 33.0 | FAIL
+PCAWhitenedCosine        | 0.2441 | 0.0110 | 0.2565 | 0.0097 | 0.1732   | 0.0164   | 852     | 1.6869  | 30.3 | FAIL
+Vec (Wgt)                | 0.2449 | 0.0087 | 0.2516 | 0.0097 | 0.1738   | 0.0163   | 852     | 1.0115  | 30.2 | PASS
+Log Reg                  | 0.1882 | 0.0126 | 0.1831 | 0.0097 | 0.1160   | 0.0212   | 852     | 0.5205  | 36.1 | FAIL
+LDA                      | 0.1417 | 0.0079 | 0.1266 | 0.0097 | 0.1142   | 0.0119   | 852     | 6.0682  | 32.5 | PASS
+Tiny MLP                 | 0.1724 | 0.0118 | 0.1718 | 0.0097 | 0.1156   | 0.0215   | 852     | 0.9855  | 34.2 | FAIL
+MultiProtoCosine         | 0.0417 | 0.0063 | 0.0468 | 0.0097 | 0.0251   | 0.0084   | 852     | 0.8995  | 36.7 | PASS
+WeightedEnsemble         | 0.3031 | 0.0134 | 0.3040 | 0.0097 | 0.2301   | 0.0241   | 852     | 1.0422  | 58.1 | FAIL
+XGBoost                  | 0.1559 | 0.0079 | 0.1726 | 0.0089 | 0.1082   | 0.0125   | 852     | 0.8228  | 50.0 | PASS
+LDA1+LogReg              | 0.1913 | 0.0126 | 0.1871 | 0.0097 | 0.1189   | 0.0212   | 852     | 0.5204  | 33.3 | FAIL
+PCA16+LogReg             | 0.2031 | 0.0126 | 0.2056 | 0.0097 | 0.1313   | 0.0212   | 852     | 0.5192  | 35.6 | FAIL
+PCA32+LogReg             | 0.2016 | 0.0126 | 0.2000 | 0.0097 | 0.1299   | 0.0212   | 852     | 0.5193  | 36.4 | FAIL
+PCA16+VecWeighted        | 0.0598 | 0.0079 | 0.0621 | 0.0097 | 0.0352   | 0.0079   | 852     | 0.0701  | 34.9 | PASS
+PCA32+VecWeighted        | 0.0598 | 0.0102 | 0.0613 | 0.0097 | 0.0361   | 0.0086   | 852     | 0.0755  | 35.1 | FAIL
+StabilizedWhitenedCosine | 0.2236 | 0.0087 | 0.2403 | 0.0097 | 0.1517   | 0.0138   | 852     | 1.7127  | 33.3 | PASS
+
+[trial=20 seed=62] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.1943, Pooled external calib: TPR=0.2710, FPR=0.0097
+  PrecomputedCosine   : +0.2832
+  PCAWhitenedCosine   : +0.0456
+  XGBoost             : +0.2004
+  Tiny MLP            : +0.4151
+  LDA                 : +0.0558
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1772 | 0.0071 | 0.1637 | 0.0153 | 0.1427   | 0.0088   | 858     | 1.0000  | 56.2 | PASS
+AndBox-HC                | 0.0906 | 0.0118 | 0.0984 | 0.0097 | 0.0807   | 0.0173   | 858     | 0.0001  | 32.9 | FAIL
+PCAWhitenedCosine        | 0.2063 | 0.0087 | 0.2032 | 0.0097 | 0.1552   | 0.0162   | 858     | 1.8446  | 29.8 | PASS
+Vec (Wgt)                | 0.2795 | 0.0102 | 0.2718 | 0.0097 | 0.2112   | 0.0160   | 858     | 1.0101  | 30.1 | FAIL
+Log Reg                  | 0.1850 | 0.0110 | 0.1774 | 0.0097 | 0.1322   | 0.0198   | 858     | 0.5205  | 36.4 | FAIL
+LDA                      | 0.1268 | 0.0094 | 0.1315 | 0.0097 | 0.1075   | 0.0154   | 858     | 6.1707  | 33.2 | PASS
+Tiny MLP                 | 0.2142 | 0.0094 | 0.2065 | 0.0097 | 0.1592   | 0.0162   | 858     | 0.9731  | 34.5 | PASS
+MultiProtoCosine         | 0.0378 | 0.0094 | 0.0444 | 0.0097 | 0.0246   | 0.0118   | 858     | 0.8997  | 36.6 | PASS
+WeightedEnsemble         | 0.2906 | 0.0126 | 0.2710 | 0.0097 | 0.2230   | 0.0222   | 858     | 1.1943  | 57.4 | FAIL
+XGBoost                  | 0.2394 | 0.0087 | 0.2153 | 0.0097 | 0.1773   | 0.0154   | 858     | 0.8234  | 49.8 | PASS
+LDA1+LogReg              | 0.1843 | 0.0110 | 0.1782 | 0.0097 | 0.1321   | 0.0198   | 858     | 0.5205  | 33.3 | FAIL
+PCA16+LogReg             | 0.1827 | 0.0126 | 0.1734 | 0.0097 | 0.1291   | 0.0217   | 858     | 0.5206  | 34.9 | FAIL
+PCA32+LogReg             | 0.1843 | 0.0118 | 0.1742 | 0.0097 | 0.1306   | 0.0204   | 858     | 0.5206  | 36.1 | FAIL
+PCA16+VecWeighted        | 0.0307 | 0.0063 | 0.0210 | 0.0097 | 0.0231   | 0.0066   | 858     | 0.0674  | 33.8 | PASS
+PCA32+VecWeighted        | 0.0331 | 0.0110 | 0.0282 | 0.0097 | 0.0307   | 0.0138   | 858     | 0.0690  | 34.8 | FAIL
+StabilizedWhitenedCosine | 0.2244 | 0.0102 | 0.2226 | 0.0097 | 0.1616   | 0.0173   | 858     | 1.7677  | 33.6 | FAIL
+
+[trial=21 seed=63] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.0931, Pooled external calib: TPR=0.2710, FPR=0.0097
+  PrecomputedCosine   : +0.1369
+  PCAWhitenedCosine   : +0.3322
+  XGBoost             : +0.4468
+  Tiny MLP            : +0.0732
+  LDA                 : +0.0110
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1575 | 0.0063 | 0.1669 | 0.0073 | 0.1450   | 0.0131   | 881     | 1.0000  | 33.9 | PASS
+AndBox-HC                | 0.1512 | 0.0079 | 0.1387 | 0.0097 | 0.1390   | 0.0137   | 881     | -0.0000 | 34.0 | PASS
+PCAWhitenedCosine        | 0.2535 | 0.0047 | 0.2347 | 0.0097 | 0.1796   | 0.0090   | 881     | 1.6620  | 31.2 | PASS
+Vec (Wgt)                | 0.3181 | 0.0110 | 0.3177 | 0.0097 | 0.2500   | 0.0213   | 881     | 0.9883  | 31.8 | FAIL
+Log Reg                  | 0.1811 | 0.0079 | 0.1798 | 0.0097 | 0.1106   | 0.0156   | 881     | 0.5193  | 37.5 | PASS
+LDA                      | 0.1331 | 0.0055 | 0.1161 | 0.0097 | 0.1125   | 0.0090   | 881     | 5.5373  | 34.2 | PASS
+Tiny MLP                 | 0.1819 | 0.0071 | 0.1806 | 0.0129 | 0.1412   | 0.0123   | 881     | 0.9688  | 35.8 | PASS
+MultiProtoCosine         | 0.0630 | 0.0142 | 0.0573 | 0.0097 | 0.0377   | 0.0153   | 881     | 0.8918  | 37.8 | FAIL
+WeightedEnsemble         | 0.2969 | 0.0079 | 0.2710 | 0.0097 | 0.2093   | 0.0145   | 881     | 1.0931  | 61.9 | PASS
+XGBoost                  | 0.2677 | 0.0102 | 0.2653 | 0.0097 | 0.2118   | 0.0167   | 881     | 0.7882  | 52.0 | FAIL
+LDA1+LogReg              | 0.1677 | 0.0079 | 0.1645 | 0.0097 | 0.1002   | 0.0156   | 881     | 0.5206  | 39.7 | PASS
+PCA16+LogReg             | 0.1874 | 0.0094 | 0.1847 | 0.0097 | 0.1133   | 0.0189   | 881     | 0.5190  | 42.6 | PASS
+PCA32+LogReg             | 0.1787 | 0.0087 | 0.1782 | 0.0097 | 0.1079   | 0.0172   | 881     | 0.5195  | 40.6 | PASS
+PCA16+VecWeighted        | 0.0134 | 0.0055 | 0.0137 | 0.0097 | 0.0091   | 0.0063   | 881     | 0.0745  | 34.9 | PASS
+PCA32+VecWeighted        | 0.0276 | 0.0142 | 0.0218 | 0.0097 | 0.0211   | 0.0147   | 881     | 0.0738  | 35.7 | FAIL
+StabilizedWhitenedCosine | 0.3386 | 0.0087 | 0.3234 | 0.0097 | 0.2527   | 0.0139   | 881     | 1.3893  | 34.5 | PASS
+
+[trial=22 seed=64] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=0.8046, Pooled external calib: TPR=0.3298, FPR=0.0097
+  PrecomputedCosine   : +0.0000
+  PCAWhitenedCosine   : +0.0000
+  XGBoost             : +1.0000
+  Tiny MLP            : +0.0000
+  LDA                 : +0.0000
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.2047 | 0.0102 | 0.2089 | 0.0097 | 0.1819   | 0.0134   | 846     | 1.0000  | 30.5 | FAIL
+AndBox-HC                | 0.1457 | 0.0079 | 0.1435 | 0.0097 | 0.1378   | 0.0114   | 846     | 0.0000  | 33.2 | PASS
+PCAWhitenedCosine        | 0.2181 | 0.0063 | 0.2137 | 0.0097 | 0.1509   | 0.0069   | 846     | 1.8603  | 30.2 | PASS
+Vec (Wgt)                | 0.3299 | 0.0126 | 0.3645 | 0.0097 | 0.2752   | 0.0179   | 846     | 0.9867  | 29.9 | FAIL
+Log Reg                  | 0.2047 | 0.0157 | 0.2194 | 0.0097 | 0.1416   | 0.0258   | 846     | 0.5188  | 36.0 | FAIL
+LDA                      | 0.1276 | 0.0087 | 0.1210 | 0.0097 | 0.1058   | 0.0126   | 846     | 6.0512  | 32.5 | PASS
+Tiny MLP                 | 0.1504 | 0.0055 | 0.1629 | 0.0097 | 0.1074   | 0.0094   | 846     | 0.9885  | 34.2 | PASS
+MultiProtoCosine         | 0.0496 | 0.0205 | 0.0444 | 0.0097 | 0.0279   | 0.0208   | 846     | 0.8970  | 36.6 | FAIL
+WeightedEnsemble         | 0.3094 | 0.0157 | 0.3298 | 0.0097 | 0.2641   | 0.0239   | 846     | 0.8046  | 57.7 | FAIL
+XGBoost                  | 0.3094 | 0.0157 | 0.3298 | 0.0097 | 0.2641   | 0.0239   | 846     | 0.8046  | 54.8 | FAIL
+LDA1+LogReg              | 0.2039 | 0.0157 | 0.2202 | 0.0097 | 0.1415   | 0.0258   | 846     | 0.5188  | 44.2 | FAIL
+PCA16+LogReg             | 0.1866 | 0.0118 | 0.2065 | 0.0097 | 0.1330   | 0.0205   | 846     | 0.5198  | 48.4 | FAIL
+PCA32+LogReg             | 0.2126 | 0.0134 | 0.2218 | 0.0097 | 0.1451   | 0.0240   | 846     | 0.5191  | 43.1 | FAIL
+PCA16+VecWeighted        | 0.0354 | 0.0150 | 0.0274 | 0.0097 | 0.0261   | 0.0111   | 846     | 0.0734  | 34.2 | FAIL
+PCA32+VecWeighted        | 0.0260 | 0.0205 | 0.0210 | 0.0097 | 0.0271   | 0.0133   | 846     | 0.0697  | 34.4 | FAIL
+StabilizedWhitenedCosine | 0.2787 | 0.0134 | 0.2871 | 0.0097 | 0.2039   | 0.0158   | 846     | 1.5947  | 33.4 | FAIL
+
+[trial=23 seed=65] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.0443, Pooled external calib: TPR=0.3194, FPR=0.0097
+  PrecomputedCosine   : +0.4364
+  PCAWhitenedCosine   : +0.0571
+  XGBoost             : +0.1048
+  Tiny MLP            : +0.3819
+  LDA                 : +0.0199
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms    | OK? 
+---------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1701 | 0.0126 | 0.1774 | 0.0089 | 0.1287   | 0.0190   | 869     | 1.0000  | 51.7  | FAIL
+AndBox-HC                | 0.0764 | 0.0055 | 0.0879 | 0.0097 | 0.0690   | 0.0088   | 869     | 0.0000  | 36.1  | PASS
+PCAWhitenedCosine        | 0.2142 | 0.0134 | 0.2242 | 0.0097 | 0.1677   | 0.0199   | 869     | 1.7815  | 32.1  | FAIL
+Vec (Wgt)                | 0.2843 | 0.0094 | 0.2742 | 0.0097 | 0.2054   | 0.0159   | 869     | 1.0029  | 33.9  | PASS
+Log Reg                  | 0.1992 | 0.0071 | 0.2000 | 0.0097 | 0.1360   | 0.0109   | 869     | 0.5202  | 39.8  | PASS
+LDA                      | 0.2000 | 0.0157 | 0.2073 | 0.0097 | 0.1388   | 0.0203   | 869     | 5.8570  | 36.9  | FAIL
+Tiny MLP                 | 0.2039 | 0.0157 | 0.2194 | 0.0097 | 0.1436   | 0.0205   | 869     | 0.9879  | 38.3  | FAIL
+MultiProtoCosine         | 0.0551 | 0.0126 | 0.0476 | 0.0097 | 0.0316   | 0.0132   | 869     | 0.8946  | 61.7  | FAIL
+WeightedEnsemble         | 0.3181 | 0.0236 | 0.3194 | 0.0097 | 0.2496   | 0.0321   | 869     | 1.0443  | 112.7 | FAIL
+XGBoost                  | 0.1898 | 0.0087 | 0.1806 | 0.0097 | 0.1548   | 0.0162   | 869     | 0.8188  | 59.2  | PASS
+LDA1+LogReg              | 0.1984 | 0.0063 | 0.1984 | 0.0097 | 0.1355   | 0.0101   | 869     | 0.5203  | 40.7  | PASS
+PCA16+LogReg             | 0.2150 | 0.0110 | 0.2169 | 0.0097 | 0.1511   | 0.0154   | 869     | 0.5196  | 42.3  | FAIL
+PCA32+LogReg             | 0.2189 | 0.0079 | 0.2161 | 0.0097 | 0.1540   | 0.0118   | 869     | 0.5196  | 43.8  | PASS
+PCA16+VecWeighted        | 0.0858 | 0.0047 | 0.0790 | 0.0097 | 0.0475   | 0.0076   | 869     | 0.0654  | 39.3  | PASS
+PCA32+VecWeighted        | 0.0819 | 0.0063 | 0.0863 | 0.0097 | 0.0524   | 0.0077   | 869     | 0.0679  | 42.9  | PASS
+StabilizedWhitenedCosine | 0.2984 | 0.0181 | 0.2984 | 0.0097 | 0.2182   | 0.0264   | 869     | 1.5520  | 41.4  | FAIL
+
+[trial=24 seed=66] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.0765, Pooled external calib: TPR=0.2306, FPR=0.0097
+  PrecomputedCosine   : +0.4364
+  PCAWhitenedCosine   : +0.0571
+  XGBoost             : +0.1048
+  Tiny MLP            : +0.3819
+  LDA                 : +0.0199
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1606 | 0.0087 | 0.1589 | 0.0113 | 0.1267   | 0.0119   | 866     | 1.0000  | 30.2 | PASS
+AndBox-HC                | 0.2583 | 0.0165 | 0.2460 | 0.0097 | 0.2182   | 0.0245   | 866     | 0.0000  | 33.9 | FAIL
+PCAWhitenedCosine        | 0.2181 | 0.0087 | 0.2032 | 0.0097 | 0.1698   | 0.0115   | 866     | 1.7906  | 30.9 | PASS
+Vec (Wgt)                | 0.2819 | 0.0087 | 0.2685 | 0.0097 | 0.2234   | 0.0137   | 866     | 0.9992  | 30.6 | PASS
+Log Reg                  | 0.1843 | 0.0118 | 0.1831 | 0.0097 | 0.1091   | 0.0204   | 866     | 0.5199  | 36.8 | FAIL
+LDA                      | 0.0559 | 0.0079 | 0.0548 | 0.0097 | 0.0534   | 0.0124   | 866     | 6.8236  | 33.5 | PASS
+Tiny MLP                 | 0.1953 | 0.0087 | 0.1935 | 0.0097 | 0.1446   | 0.0128   | 866     | 0.9823  | 34.8 | PASS
+MultiProtoCosine         | 0.0457 | 0.0087 | 0.0492 | 0.0097 | 0.0259   | 0.0141   | 866     | 0.9022  | 37.2 | PASS
+WeightedEnsemble         | 0.2354 | 0.0110 | 0.2306 | 0.0097 | 0.1814   | 0.0166   | 866     | 1.0765  | 58.6 | FAIL
+XGBoost                  | 0.1126 | 0.0016 | 0.1032 | 0.0048 | 0.0800   | 0.0023   | 866     | 0.8353  | 50.7 | PASS
+LDA1+LogReg              | 0.1819 | 0.0118 | 0.1815 | 0.0097 | 0.1078   | 0.0204   | 866     | 0.5199  | 33.9 | FAIL
+PCA16+LogReg             | 0.2126 | 0.0134 | 0.2129 | 0.0097 | 0.1406   | 0.0230   | 866     | 0.5184  | 35.8 | FAIL
+PCA32+LogReg             | 0.2134 | 0.0126 | 0.2121 | 0.0097 | 0.1412   | 0.0212   | 866     | 0.5186  | 36.8 | FAIL
+PCA16+VecWeighted        | 0.0874 | 0.0079 | 0.0815 | 0.0097 | 0.0479   | 0.0145   | 866     | 0.0611  | 34.6 | PASS
+PCA32+VecWeighted        | 0.0827 | 0.0063 | 0.0766 | 0.0097 | 0.0460   | 0.0110   | 866     | 0.0663  | 35.5 | PASS
+StabilizedWhitenedCosine | 0.2378 | 0.0071 | 0.2177 | 0.0097 | 0.1767   | 0.0124   | 866     | 1.6824  | 34.3 | PASS
+
+[trial=25 seed=67] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.5265, Pooled external calib: TPR=0.2258, FPR=0.0097
+  PrecomputedCosine   : +0.0656
+  PCAWhitenedCosine   : +0.4602
+  XGBoost             : +0.1200
+  Tiny MLP            : +0.2889
+  LDA                 : +0.0653
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1827 | 0.0063 | 0.1468 | 0.0113 | 0.1304   | 0.0093   | 860     | 1.0000  | 56.5 | PASS
+AndBox-HC                | 0.1126 | 0.0047 | 0.0895 | 0.0097 | 0.1079   | 0.0051   | 860     | 0.0000  | 32.8 | PASS
+PCAWhitenedCosine        | 0.2110 | 0.0024 | 0.1984 | 0.0097 | 0.1322   | 0.0026   | 860     | 1.8057  | 29.9 | PASS
+Vec (Wgt)                | 0.3000 | 0.0047 | 0.2669 | 0.0097 | 0.2069   | 0.0060   | 860     | 1.0053  | 29.8 | PASS
+Log Reg                  | 0.1748 | 0.0071 | 0.1726 | 0.0097 | 0.1063   | 0.0122   | 860     | 0.5205  | 37.2 | PASS
+LDA                      | 0.1118 | 0.0055 | 0.1105 | 0.0097 | 0.0830   | 0.0080   | 860     | 5.5277  | 33.0 | PASS
+Tiny MLP                 | 0.1937 | 0.0055 | 0.1823 | 0.0097 | 0.1203   | 0.0080   | 860     | 0.9619  | 34.2 | PASS
+MultiProtoCosine         | 0.0409 | 0.0055 | 0.0540 | 0.0097 | 0.0266   | 0.0031   | 860     | 0.9112  | 36.9 | PASS
+WeightedEnsemble         | 0.2425 | 0.0055 | 0.2258 | 0.0097 | 0.1573   | 0.0068   | 860     | 1.5265  | 57.4 | PASS
+XGBoost                  | 0.2346 | 0.0039 | 0.1984 | 0.0097 | 0.1514   | 0.0044   | 860     | 0.8052  | 49.8 | PASS
+LDA1+LogReg              | 0.1732 | 0.0094 | 0.1734 | 0.0097 | 0.1056   | 0.0139   | 860     | 0.5216  | 33.5 | PASS
+PCA16+LogReg             | 0.1701 | 0.0071 | 0.1677 | 0.0097 | 0.1026   | 0.0115   | 860     | 0.5205  | 35.4 | PASS
+PCA32+LogReg             | 0.1748 | 0.0087 | 0.1750 | 0.0097 | 0.1063   | 0.0133   | 860     | 0.5201  | 36.2 | PASS
+PCA16+VecWeighted        | 0.0449 | 0.0157 | 0.0524 | 0.0097 | 0.0493   | 0.0188   | 860     | 0.0475  | 33.9 | FAIL
+PCA32+VecWeighted        | 0.0472 | 0.0142 | 0.0435 | 0.0097 | 0.0434   | 0.0185   | 860     | 0.0555  | 34.7 | FAIL
+StabilizedWhitenedCosine | 0.2457 | 0.0024 | 0.2274 | 0.0097 | 0.1613   | 0.0012   | 860     | 1.6450  | 33.6 | PASS
+
+[trial=26 seed=68] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.4555, Pooled external calib: TPR=0.2153, FPR=0.0097
+  PrecomputedCosine   : +0.2161
+  PCAWhitenedCosine   : +0.5478
+  XGBoost             : +0.0972
+  Tiny MLP            : +0.1269
+  LDA                 : +0.0120
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1661 | 0.0055 | 0.1500 | 0.0129 | 0.1284   | 0.0062   | 849     | 1.0000  | 47.5 | PASS
+AndBox-HC                | 0.1031 | 0.0055 | 0.1145 | 0.0097 | 0.0926   | 0.0062   | 849     | 0.0000  | 32.7 | PASS
+PCAWhitenedCosine        | 0.2181 | 0.0039 | 0.2065 | 0.0097 | 0.1511   | 0.0057   | 849     | 1.8217  | 29.5 | PASS
+Vec (Wgt)                | 0.2031 | 0.0016 | 0.1935 | 0.0097 | 0.1291   | 0.0035   | 849     | 1.0203  | 29.7 | PASS
+Log Reg                  | 0.1843 | 0.0087 | 0.1782 | 0.0097 | 0.1131   | 0.0123   | 849     | 0.5216  | 36.5 | PASS
+LDA                      | 0.0370 | 0.0024 | 0.0371 | 0.0097 | 0.0370   | 0.0053   | 849     | 7.2118  | 32.2 | PASS
+Tiny MLP                 | 0.1961 | 0.0071 | 0.1863 | 0.0097 | 0.1303   | 0.0099   | 849     | 0.9888  | 34.2 | PASS
+MultiProtoCosine         | 0.0835 | 0.0142 | 0.0629 | 0.0097 | 0.0350   | 0.0148   | 849     | 0.8899  | 36.3 | FAIL
+WeightedEnsemble         | 0.2299 | 0.0047 | 0.2153 | 0.0097 | 0.1560   | 0.0088   | 849     | 1.4555  | 57.6 | PASS
+XGBoost                  | 0.2102 | 0.0039 | 0.1895 | 0.0097 | 0.1478   | 0.0053   | 849     | 0.8122  | 49.8 | PASS
+LDA1+LogReg              | 0.1843 | 0.0087 | 0.1774 | 0.0097 | 0.1131   | 0.0123   | 849     | 0.5216  | 33.0 | PASS
+PCA16+LogReg             | 0.1819 | 0.0079 | 0.1847 | 0.0097 | 0.1107   | 0.0105   | 849     | 0.5214  | 35.0 | PASS
+PCA32+LogReg             | 0.1819 | 0.0079 | 0.1839 | 0.0097 | 0.1107   | 0.0105   | 849     | 0.5214  | 35.9 | PASS
+PCA16+VecWeighted        | 0.1094 | 0.0118 | 0.1016 | 0.0097 | 0.0544   | 0.0139   | 849     | 0.0564  | 33.8 | FAIL
+PCA32+VecWeighted        | 0.1079 | 0.0126 | 0.1040 | 0.0097 | 0.0545   | 0.0148   | 849     | 0.0641  | 34.8 | FAIL
+StabilizedWhitenedCosine | 0.2220 | 0.0039 | 0.2040 | 0.0097 | 0.1568   | 0.0058   | 849     | 1.7663  | 33.4 | PASS
+
+[trial=27 seed=69] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.4307, Pooled external calib: TPR=0.3637, FPR=0.0097
+  PrecomputedCosine   : +0.1817
+  PCAWhitenedCosine   : +0.4603
+  XGBoost             : +0.0868
+  Tiny MLP            : +0.1854
+  LDA                 : +0.0858
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms    | OK? 
+---------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.2457 | 0.0142 | 0.2105 | 0.0097 | 0.1957   | 0.0178   | 850     | 0.9956  | 53.1  | FAIL
+AndBox-HC                | 0.2252 | 0.0189 | 0.1968 | 0.0097 | 0.1889   | 0.0257   | 850     | -0.0000 | 33.8  | FAIL
+PCAWhitenedCosine        | 0.3465 | 0.0118 | 0.3097 | 0.0097 | 0.2475   | 0.0185   | 850     | 1.5007  | 31.1  | FAIL
+Vec (Wgt)                | 0.3772 | 0.0165 | 0.3234 | 0.0097 | 0.2917   | 0.0232   | 850     | 0.9805  | 30.6  | FAIL
+Log Reg                  | 0.2299 | 0.0079 | 0.2032 | 0.0097 | 0.1483   | 0.0129   | 850     | 0.5193  | 36.5  | PASS
+LDA                      | 0.1535 | 0.0079 | 0.1419 | 0.0097 | 0.1162   | 0.0111   | 850     | 5.9472  | 32.8  | PASS
+Tiny MLP                 | 0.2244 | 0.0087 | 0.2024 | 0.0097 | 0.1583   | 0.0135   | 850     | 0.9811  | 34.9  | PASS
+MultiProtoCosine         | 0.0354 | 0.0079 | 0.0379 | 0.0097 | 0.0186   | 0.0115   | 850     | 0.9073  | 37.2  | PASS
+WeightedEnsemble         | 0.4008 | 0.0126 | 0.3637 | 0.0097 | 0.2855   | 0.0197   | 850     | 1.4307  | 118.5 | FAIL
+XGBoost                  | 0.2661 | 0.0118 | 0.2250 | 0.0097 | 0.2044   | 0.0141   | 850     | 0.8107  | 50.6  | FAIL
+LDA1+LogReg              | 0.2299 | 0.0079 | 0.2024 | 0.0097 | 0.1482   | 0.0129   | 850     | 0.5194  | 33.5  | PASS
+PCA16+LogReg             | 0.2339 | 0.0071 | 0.2065 | 0.0097 | 0.1550   | 0.0117   | 850     | 0.5192  | 35.6  | PASS
+PCA32+LogReg             | 0.2480 | 0.0110 | 0.2153 | 0.0097 | 0.1665   | 0.0171   | 850     | 0.5186  | 38.5  | FAIL
+PCA16+VecWeighted        | 0.0181 | 0.0079 | 0.0242 | 0.0097 | 0.0121   | 0.0052   | 850     | 0.0593  | 34.5  | PASS
+PCA32+VecWeighted        | 0.0331 | 0.0071 | 0.0315 | 0.0097 | 0.0217   | 0.0088   | 850     | 0.0643  | 36.5  | PASS
+StabilizedWhitenedCosine | 0.3283 | 0.0165 | 0.3056 | 0.0097 | 0.2439   | 0.0228   | 850     | 1.4873  | 34.6  | FAIL
+
+[trial=28 seed=70] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=2.1397, Pooled external calib: TPR=0.3589, FPR=0.0097
+  PrecomputedCosine   : +0.0154
+  PCAWhitenedCosine   : +0.4848
+  XGBoost             : +0.1267
+  Tiny MLP            : +0.1090
+  LDA                 : +0.2640
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1866 | 0.0087 | 0.1669 | 0.0153 | 0.1258   | 0.0113   | 864     | 1.0000  | 38.0 | PASS
+AndBox-HC                | 0.0969 | 0.0087 | 0.1105 | 0.0097 | 0.0845   | 0.0118   | 864     | 0.0001  | 34.2 | PASS
+PCAWhitenedCosine        | 0.1937 | 0.0055 | 0.1984 | 0.0089 | 0.1416   | 0.0098   | 864     | 1.8102  | 31.3 | PASS
+Vec (Wgt)                | 0.2874 | 0.0118 | 0.2734 | 0.0097 | 0.1945   | 0.0184   | 864     | 1.0014  | 30.9 | FAIL
+Log Reg                  | 0.2346 | 0.0110 | 0.2073 | 0.0097 | 0.1520   | 0.0150   | 864     | 0.5200  | 36.9 | FAIL
+LDA                      | 0.2409 | 0.0126 | 0.2500 | 0.0097 | 0.1768   | 0.0228   | 864     | 5.2688  | 33.5 | FAIL
+Tiny MLP                 | 0.2803 | 0.0126 | 0.2903 | 0.0097 | 0.1953   | 0.0209   | 864     | 0.9709  | 35.4 | FAIL
+MultiProtoCosine         | 0.0433 | 0.0157 | 0.0435 | 0.0097 | 0.0243   | 0.0143   | 864     | 0.9010  | 37.8 | FAIL
+WeightedEnsemble         | 0.3488 | 0.0157 | 0.3589 | 0.0097 | 0.2550   | 0.0258   | 864     | 2.1397  | 72.0 | FAIL
+XGBoost                  | 0.2260 | 0.0102 | 0.2073 | 0.0097 | 0.1492   | 0.0150   | 864     | 0.8294  | 51.9 | FAIL
+LDA1+LogReg              | 0.2331 | 0.0102 | 0.2056 | 0.0097 | 0.1518   | 0.0146   | 864     | 0.5201  | 39.4 | FAIL
+PCA16+LogReg             | 0.2559 | 0.0134 | 0.2323 | 0.0097 | 0.1694   | 0.0163   | 864     | 0.5193  | 41.4 | FAIL
+PCA32+LogReg             | 0.2559 | 0.0134 | 0.2306 | 0.0097 | 0.1678   | 0.0163   | 864     | 0.5192  | 38.1 | FAIL
+PCA16+VecWeighted        | 0.0220 | 0.0134 | 0.0315 | 0.0097 | 0.0172   | 0.0128   | 864     | 0.0485  | 34.9 | FAIL
+PCA32+VecWeighted        | 0.0480 | 0.0126 | 0.0685 | 0.0097 | 0.0404   | 0.0152   | 864     | 0.0489  | 35.7 | FAIL
+StabilizedWhitenedCosine | 0.2323 | 0.0063 | 0.2298 | 0.0089 | 0.1511   | 0.0113   | 864     | 1.7477  | 34.5 | PASS
+
+[trial=29 seed=71] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.2078, Pooled external calib: TPR=0.2710, FPR=0.0097
+  PrecomputedCosine   : +0.2204
+  PCAWhitenedCosine   : +0.3145
+  XGBoost             : +0.1972
+  Tiny MLP            : +0.2559
+  LDA                 : +0.0120
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1425 | 0.0063 | 0.1548 | 0.0161 | 0.1195   | 0.0105   | 851     | 1.0000  | 33.0 | PASS
+AndBox-HC                | 0.1291 | 0.0102 | 0.1315 | 0.0097 | 0.1180   | 0.0138   | 851     | 0.0001  | 35.6 | FAIL
+PCAWhitenedCosine        | 0.2465 | 0.0094 | 0.2371 | 0.0097 | 0.1761   | 0.0144   | 851     | 1.7719  | 48.8 | PASS
+Vec (Wgt)                | 0.2228 | 0.0055 | 0.2194 | 0.0097 | 0.1541   | 0.0091   | 851     | 1.0151  | 72.2 | PASS
+Log Reg                  | 0.2008 | 0.0102 | 0.2032 | 0.0097 | 0.1365   | 0.0187   | 851     | 0.5197  | 53.1 | FAIL
+LDA                      | 0.0858 | 0.0102 | 0.0919 | 0.0097 | 0.0765   | 0.0173   | 851     | 6.4948  | 79.2 | FAIL
+Tiny MLP                 | 0.1638 | 0.0063 | 0.1508 | 0.0097 | 0.1289   | 0.0108   | 851     | 0.9902  | 66.8 | PASS
+MultiProtoCosine         | 0.0378 | 0.0110 | 0.0411 | 0.0097 | 0.0190   | 0.0071   | 851     | 0.9091  | 47.8 | FAIL
+WeightedEnsemble         | 0.2756 | 0.0118 | 0.2710 | 0.0097 | 0.1946   | 0.0195   | 851     | 1.2078  | 69.0 | FAIL
+XGBoost                  | 0.1504 | 0.0079 | 0.1677 | 0.0097 | 0.1047   | 0.0128   | 851     | 0.8280  | 51.9 | PASS
+LDA1+LogReg              | 0.1732 | 0.0079 | 0.1823 | 0.0097 | 0.1145   | 0.0144   | 851     | 0.5206  | 34.9 | PASS
+PCA16+LogReg             | 0.2008 | 0.0094 | 0.1984 | 0.0097 | 0.1347   | 0.0178   | 851     | 0.5198  | 38.1 | PASS
+PCA32+LogReg             | 0.2071 | 0.0102 | 0.2048 | 0.0097 | 0.1434   | 0.0187   | 851     | 0.5195  | 62.2 | FAIL
+PCA16+VecWeighted        | 0.1055 | 0.0094 | 0.1169 | 0.0097 | 0.0631   | 0.0093   | 851     | 0.0539  | 40.4 | PASS
+PCA32+VecWeighted        | 0.1142 | 0.0087 | 0.1306 | 0.0097 | 0.0728   | 0.0084   | 851     | 0.0541  | 51.7 | PASS
+StabilizedWhitenedCosine | 0.2654 | 0.0079 | 0.2484 | 0.0097 | 0.1835   | 0.0133   | 851     | 1.6867  | 48.5 | PASS
+
+[trial=30 seed=72] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.0388, Pooled external calib: TPR=0.3145, FPR=0.0097
+  PrecomputedCosine   : +0.4364
+  PCAWhitenedCosine   : +0.0571
+  XGBoost             : +0.1048
+  Tiny MLP            : +0.3819
+  LDA                 : +0.0199
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.2283 | 0.0126 | 0.2169 | 0.0097 | 0.2012   | 0.0230   | 838     | 0.9957  | 28.9 | FAIL
+AndBox-HC                | 0.1063 | 0.0087 | 0.0935 | 0.0097 | 0.1033   | 0.0137   | 838     | 0.0001  | 32.0 | PASS
+PCAWhitenedCosine        | 0.2850 | 0.0102 | 0.2734 | 0.0097 | 0.2262   | 0.0185   | 838     | 1.6385  | 29.9 | FAIL
+Vec (Wgt)                | 0.3173 | 0.0157 | 0.3185 | 0.0097 | 0.2637   | 0.0266   | 838     | 0.9935  | 29.7 | FAIL
+Log Reg                  | 0.1724 | 0.0142 | 0.1823 | 0.0097 | 0.1216   | 0.0230   | 838     | 0.5199  | 36.0 | FAIL
+LDA                      | 0.1646 | 0.0110 | 0.1895 | 0.0097 | 0.1394   | 0.0189   | 838     | 5.8622  | 32.1 | FAIL
+Tiny MLP                 | 0.2346 | 0.0157 | 0.2347 | 0.0097 | 0.1852   | 0.0262   | 838     | 0.9719  | 33.9 | FAIL
+MultiProtoCosine         | 0.0449 | 0.0079 | 0.0629 | 0.0097 | 0.0330   | 0.0119   | 838     | 0.8990  | 36.4 | PASS
+WeightedEnsemble         | 0.3142 | 0.0181 | 0.3145 | 0.0097 | 0.2618   | 0.0303   | 838     | 1.0388  | 57.6 | FAIL
+XGBoost                  | 0.1992 | 0.0079 | 0.2008 | 0.0097 | 0.1743   | 0.0141   | 838     | 0.8229  | 49.7 | PASS
+LDA1+LogReg              | 0.1732 | 0.0165 | 0.1831 | 0.0097 | 0.1212   | 0.0259   | 838     | 0.5204  | 33.1 | FAIL
+PCA16+LogReg             | 0.1787 | 0.0157 | 0.1855 | 0.0097 | 0.1268   | 0.0241   | 838     | 0.5198  | 35.0 | FAIL
+PCA32+LogReg             | 0.1677 | 0.0150 | 0.1750 | 0.0097 | 0.1183   | 0.0232   | 838     | 0.5203  | 35.8 | FAIL
+PCA16+VecWeighted        | 0.0819 | 0.0118 | 0.0798 | 0.0097 | 0.0507   | 0.0173   | 838     | 0.0632  | 33.6 | FAIL
+PCA32+VecWeighted        | 0.0913 | 0.0142 | 0.0879 | 0.0097 | 0.0590   | 0.0215   | 838     | 0.0635  | 34.5 | FAIL
+StabilizedWhitenedCosine | 0.3402 | 0.0173 | 0.3250 | 0.0097 | 0.2735   | 0.0286   | 838     | 1.4361  | 33.4 | FAIL
+
+[trial=31 seed=73] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=0.8121, Pooled external calib: TPR=0.2790, FPR=0.0097
+  PrecomputedCosine   : +0.0000
+  PCAWhitenedCosine   : +0.0000
+  XGBoost             : +1.0000
+  Tiny MLP            : +0.0000
+  LDA                 : +0.0000
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.2142 | 0.0118 | 0.2315 | 0.0097 | 0.1770   | 0.0171   | 859     | 0.9988  | 42.6 | FAIL
+AndBox-HC                | 0.1496 | 0.0142 | 0.1355 | 0.0097 | 0.1306   | 0.0208   | 859     | 0.0001  | 34.0 | FAIL
+PCAWhitenedCosine        | 0.2299 | 0.0102 | 0.2435 | 0.0097 | 0.1758   | 0.0175   | 859     | 1.6932  | 30.6 | FAIL
+Vec (Wgt)                | 0.3173 | 0.0189 | 0.3516 | 0.0097 | 0.2469   | 0.0297   | 859     | 0.9845  | 30.3 | FAIL
+Log Reg                  | 0.2394 | 0.0213 | 0.2355 | 0.0097 | 0.1674   | 0.0290   | 859     | 0.5172  | 36.5 | FAIL
+LDA                      | 0.1307 | 0.0110 | 0.1516 | 0.0097 | 0.1144   | 0.0177   | 859     | 5.8850  | 32.6 | FAIL
+Tiny MLP                 | 0.1669 | 0.0110 | 0.1919 | 0.0097 | 0.1316   | 0.0154   | 859     | 0.9896  | 34.4 | FAIL
+MultiProtoCosine         | 0.0331 | 0.0047 | 0.0355 | 0.0097 | 0.0189   | 0.0026   | 859     | 0.9057  | 37.0 | PASS
+WeightedEnsemble         | 0.2717 | 0.0110 | 0.2790 | 0.0097 | 0.2063   | 0.0175   | 859     | 0.8121  | 58.1 | FAIL
+XGBoost                  | 0.2717 | 0.0110 | 0.2790 | 0.0097 | 0.2063   | 0.0175   | 859     | 0.8121  | 51.3 | FAIL
+LDA1+LogReg              | 0.2402 | 0.0220 | 0.2355 | 0.0097 | 0.1664   | 0.0316   | 859     | 0.5172  | 33.5 | FAIL
+PCA16+LogReg             | 0.2520 | 0.0205 | 0.2395 | 0.0097 | 0.1719   | 0.0285   | 859     | 0.5174  | 35.2 | FAIL
+PCA32+LogReg             | 0.2362 | 0.0213 | 0.2282 | 0.0097 | 0.1619   | 0.0303   | 859     | 0.5178  | 36.1 | FAIL
+PCA16+VecWeighted        | 0.0740 | 0.0126 | 0.0815 | 0.0097 | 0.0379   | 0.0088   | 859     | 0.0761  | 34.1 | FAIL
+PCA32+VecWeighted        | 0.0630 | 0.0110 | 0.0661 | 0.0097 | 0.0338   | 0.0075   | 859     | 0.0817  | 35.1 | FAIL
+StabilizedWhitenedCosine | 0.2472 | 0.0118 | 0.2371 | 0.0097 | 0.1808   | 0.0204   | 859     | 1.6484  | 33.4 | FAIL
+
+[trial=32 seed=74] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.5967, Pooled external calib: TPR=0.3073, FPR=0.0097
+  PrecomputedCosine   : +0.0000
+  PCAWhitenedCosine   : +1.0000
+  XGBoost             : +0.0000
+  Tiny MLP            : +0.0000
+  LDA                 : +0.0000
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.2291 | 0.0213 | 0.2331 | 0.0097 | 0.1902   | 0.0323   | 841     | 0.9980  | 29.3 | FAIL
+AndBox-HC                | 0.1724 | 0.0197 | 0.1831 | 0.0097 | 0.1407   | 0.0275   | 841     | 0.0000  | 32.1 | FAIL
+PCAWhitenedCosine        | 0.2969 | 0.0110 | 0.3073 | 0.0097 | 0.2135   | 0.0176   | 841     | 1.5967  | 30.2 | FAIL
+Vec (Wgt)                | 0.2811 | 0.0142 | 0.3024 | 0.0097 | 0.2048   | 0.0221   | 841     | 0.9982  | 30.0 | FAIL
+Log Reg                  | 0.2331 | 0.0142 | 0.2161 | 0.0097 | 0.1433   | 0.0218   | 841     | 0.5193  | 36.4 | FAIL
+LDA                      | 0.1764 | 0.0110 | 0.2008 | 0.0097 | 0.1387   | 0.0130   | 841     | 5.8511  | 32.6 | FAIL
+Tiny MLP                 | 0.2677 | 0.0142 | 0.2750 | 0.0097 | 0.1890   | 0.0199   | 841     | 0.9752  | 34.2 | FAIL
+MultiProtoCosine         | 0.0465 | 0.0142 | 0.0548 | 0.0097 | 0.0257   | 0.0160   | 841     | 0.8974  | 36.8 | FAIL
+WeightedEnsemble         | 0.2969 | 0.0110 | 0.3073 | 0.0097 | 0.2135   | 0.0176   | 841     | 1.5967  | 57.5 | FAIL
+XGBoost                  | 0.1874 | 0.0047 | 0.1992 | 0.0097 | 0.1473   | 0.0082   | 841     | 0.8176  | 49.7 | PASS
+LDA1+LogReg              | 0.2346 | 0.0165 | 0.2177 | 0.0097 | 0.1440   | 0.0260   | 841     | 0.5191  | 33.3 | FAIL
+PCA16+LogReg             | 0.2417 | 0.0157 | 0.2306 | 0.0097 | 0.1549   | 0.0237   | 841     | 0.5183  | 35.1 | FAIL
+PCA32+LogReg             | 0.2457 | 0.0173 | 0.2347 | 0.0097 | 0.1568   | 0.0262   | 841     | 0.5183  | 36.3 | FAIL
+PCA16+VecWeighted        | 0.0236 | 0.0102 | 0.0177 | 0.0097 | 0.0204   | 0.0123   | 841     | 0.0609  | 33.9 | FAIL
+PCA32+VecWeighted        | 0.0283 | 0.0008 | 0.0371 | 0.0097 | 0.0204   | 0.0017   | 841     | 0.0764  | 34.7 | PASS
+StabilizedWhitenedCosine | 0.2772 | 0.0102 | 0.2815 | 0.0097 | 0.2063   | 0.0175   | 841     | 1.5796  | 33.6 | FAIL
+
+[trial=33 seed=75] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.0382, Pooled external calib: TPR=0.3024, FPR=0.0097
+  PrecomputedCosine   : +0.4364
+  PCAWhitenedCosine   : +0.0571
+  XGBoost             : +0.1048
+  Tiny MLP            : +0.3819
+  LDA                 : +0.0199
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1827 | 0.0047 | 0.1653 | 0.0097 | 0.1302   | 0.0079   | 857     | 1.0000  | 30.4 | PASS
+AndBox-HC                | 0.2031 | 0.0110 | 0.1823 | 0.0097 | 0.1551   | 0.0194   | 857     | 0.0000  | 32.8 | FAIL
+PCAWhitenedCosine        | 0.2252 | 0.0071 | 0.2282 | 0.0097 | 0.1543   | 0.0113   | 857     | 1.7657  | 30.1 | PASS
+Vec (Wgt)                | 0.2787 | 0.0071 | 0.2976 | 0.0097 | 0.1955   | 0.0123   | 857     | 1.0037  | 30.1 | PASS
+Log Reg                  | 0.1559 | 0.0063 | 0.1669 | 0.0097 | 0.0912   | 0.0077   | 857     | 0.5217  | 36.4 | PASS
+LDA                      | 0.1598 | 0.0110 | 0.1766 | 0.0097 | 0.1117   | 0.0166   | 857     | 5.6599  | 32.3 | FAIL
+Tiny MLP                 | 0.1811 | 0.0063 | 0.1815 | 0.0097 | 0.1179   | 0.0095   | 857     | 0.9809  | 35.5 | PASS
+MultiProtoCosine         | 0.0354 | 0.0134 | 0.0452 | 0.0097 | 0.0244   | 0.0169   | 857     | 0.9028  | 36.7 | FAIL
+WeightedEnsemble         | 0.2898 | 0.0126 | 0.3024 | 0.0097 | 0.2033   | 0.0214   | 857     | 1.0382  | 57.7 | FAIL
+XGBoost                  | 0.2756 | 0.0110 | 0.2718 | 0.0097 | 0.1978   | 0.0176   | 857     | 0.7871  | 50.5 | FAIL
+LDA1+LogReg              | 0.1559 | 0.0063 | 0.1661 | 0.0097 | 0.0912   | 0.0077   | 857     | 0.5216  | 60.5 | PASS
+PCA16+LogReg             | 0.1528 | 0.0055 | 0.1581 | 0.0097 | 0.0899   | 0.0069   | 857     | 0.5210  | 45.5 | PASS
+PCA32+LogReg             | 0.1551 | 0.0055 | 0.1613 | 0.0097 | 0.0924   | 0.0069   | 857     | 0.5210  | 39.0 | PASS
+PCA16+VecWeighted        | 0.0378 | 0.0110 | 0.0266 | 0.0097 | 0.0295   | 0.0078   | 857     | 0.0749  | 33.9 | FAIL
+PCA32+VecWeighted        | 0.0409 | 0.0102 | 0.0355 | 0.0097 | 0.0307   | 0.0095   | 857     | 0.0697  | 34.7 | FAIL
+StabilizedWhitenedCosine | 0.2701 | 0.0094 | 0.2685 | 0.0097 | 0.1915   | 0.0126   | 857     | 1.5421  | 33.7 | PASS
+
+[trial=34 seed=76] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=0.7967, Pooled external calib: TPR=0.3258, FPR=0.0097
+  PrecomputedCosine   : +0.0000
+  PCAWhitenedCosine   : +0.0000
+  XGBoost             : +1.0000
+  Tiny MLP            : +0.0000
+  LDA                 : +0.0000
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms    | OK? 
+---------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1835 | 0.0126 | 0.1903 | 0.0089 | 0.1444   | 0.0177   | 865     | 1.0000  | 29.5  | FAIL
+AndBox-HC                | 0.1236 | 0.0079 | 0.1250 | 0.0097 | 0.1090   | 0.0121   | 865     | 0.0001  | 37.5  | PASS
+PCAWhitenedCosine        | 0.2409 | 0.0071 | 0.2500 | 0.0097 | 0.1800   | 0.0118   | 865     | 1.7454  | 38.2  | PASS
+Vec (Wgt)                | 0.2850 | 0.0079 | 0.2927 | 0.0097 | 0.2125   | 0.0132   | 865     | 0.9980  | 33.8  | PASS
+Log Reg                  | 0.2260 | 0.0157 | 0.2363 | 0.0097 | 0.1571   | 0.0272   | 865     | 0.5179  | 46.2  | FAIL
+LDA                      | 0.1717 | 0.0079 | 0.1839 | 0.0097 | 0.1306   | 0.0120   | 865     | 5.6790  | 42.4  | PASS
+Tiny MLP                 | 0.1606 | 0.0055 | 0.1669 | 0.0097 | 0.1234   | 0.0086   | 865     | 0.9856  | 50.2  | PASS
+MultiProtoCosine         | 0.0433 | 0.0150 | 0.0468 | 0.0097 | 0.0247   | 0.0144   | 865     | 0.9062  | 55.9  | FAIL
+WeightedEnsemble         | 0.3102 | 0.0165 | 0.3258 | 0.0097 | 0.2374   | 0.0231   | 865     | 0.7967  | 115.4 | FAIL
+XGBoost                  | 0.3102 | 0.0165 | 0.3258 | 0.0097 | 0.2374   | 0.0231   | 865     | 0.7967  | 74.8  | FAIL
+LDA1+LogReg              | 0.2291 | 0.0157 | 0.2411 | 0.0097 | 0.1611   | 0.0272   | 865     | 0.5177  | 42.0  | FAIL
+PCA16+LogReg             | 0.2378 | 0.0157 | 0.2476 | 0.0097 | 0.1700   | 0.0260   | 865     | 0.5174  | 51.5  | FAIL
+PCA32+LogReg             | 0.2465 | 0.0165 | 0.2581 | 0.0097 | 0.1774   | 0.0266   | 865     | 0.5173  | 51.2  | FAIL
+PCA16+VecWeighted        | 0.0850 | 0.0079 | 0.1185 | 0.0097 | 0.0585   | 0.0156   | 865     | 0.0612  | 48.7  | PASS
+PCA32+VecWeighted        | 0.0709 | 0.0118 | 0.0847 | 0.0097 | 0.0498   | 0.0133   | 865     | 0.0701  | 50.0  | FAIL
+StabilizedWhitenedCosine | 0.1937 | 0.0094 | 0.1992 | 0.0097 | 0.1479   | 0.0169   | 865     | 1.7573  | 62.6  | PASS
+
+[trial=35 seed=77] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.2914, Pooled external calib: TPR=0.3113, FPR=0.0097
+  PrecomputedCosine   : +0.3246
+  PCAWhitenedCosine   : +0.1636
+  XGBoost             : +0.2291
+  Tiny MLP            : +0.2081
+  LDA                 : +0.0747
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1614 | 0.0102 | 0.1548 | 0.0097 | 0.1262   | 0.0153   | 862     | 1.0000  | 53.1 | FAIL
+AndBox-HC                | 0.1465 | 0.0094 | 0.1419 | 0.0097 | 0.1123   | 0.0140   | 862     | 0.0001  | 48.2 | PASS
+PCAWhitenedCosine        | 0.2142 | 0.0094 | 0.2210 | 0.0097 | 0.1634   | 0.0124   | 862     | 1.7073  | 40.8 | PASS
+Vec (Wgt)                | 0.2512 | 0.0079 | 0.2694 | 0.0089 | 0.1834   | 0.0115   | 862     | 1.0014  | 34.1 | PASS
+Log Reg                  | 0.1252 | 0.0008 | 0.1395 | 0.0097 | 0.0755   | 0.0006   | 862     | 0.5242  | 53.2 | PASS
+LDA                      | 0.2157 | 0.0181 | 0.2194 | 0.0097 | 0.1615   | 0.0228   | 862     | 5.4321  | 50.4 | FAIL
+Tiny MLP                 | 0.2472 | 0.0142 | 0.2548 | 0.0097 | 0.1900   | 0.0176   | 862     | 0.9829  | 39.6 | FAIL
+MultiProtoCosine         | 0.0386 | 0.0079 | 0.0468 | 0.0097 | 0.0219   | 0.0078   | 862     | 0.8934  | 71.9 | PASS
+WeightedEnsemble         | 0.3150 | 0.0165 | 0.3113 | 0.0097 | 0.2293   | 0.0219   | 862     | 1.2914  | 88.8 | FAIL
+XGBoost                  | 0.2236 | 0.0063 | 0.2331 | 0.0097 | 0.1717   | 0.0073   | 862     | 0.8139  | 76.7 | PASS
+LDA1+LogReg              | 0.1260 | 0.0008 | 0.1395 | 0.0097 | 0.0757   | 0.0006   | 862     | 0.5242  | 36.7 | PASS
+PCA16+LogReg             | 0.1260 | 0.0008 | 0.1411 | 0.0097 | 0.0757   | 0.0006   | 862     | 0.5233  | 38.8 | PASS
+PCA32+LogReg             | 0.1268 | 0.0008 | 0.1403 | 0.0097 | 0.0776   | 0.0006   | 862     | 0.5235  | 53.3 | PASS
+PCA16+VecWeighted        | 0.0661 | 0.0039 | 0.0766 | 0.0097 | 0.0401   | 0.0007   | 862     | 0.0655  | 49.7 | PASS
+PCA32+VecWeighted        | 0.0614 | 0.0016 | 0.0710 | 0.0097 | 0.0369   | 0.0010   | 862     | 0.0716  | 37.9 | PASS
+StabilizedWhitenedCosine | 0.2504 | 0.0094 | 0.2548 | 0.0097 | 0.1799   | 0.0139   | 862     | 1.5588  | 72.4 | PASS
+
+[trial=36 seed=78] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.4504, Pooled external calib: TPR=0.3435, FPR=0.0097
+  PrecomputedCosine   : +0.7052
+  PCAWhitenedCosine   : +0.1314
+  XGBoost             : +0.0181
+  Tiny MLP            : +0.0260
+  LDA                 : +0.1193
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1929 | 0.0071 | 0.1871 | 0.0097 | 0.1328   | 0.0087   | 861     | 1.0000  | 57.1 | PASS
+AndBox-HC                | 0.1417 | 0.0055 | 0.1274 | 0.0097 | 0.1182   | 0.0097   | 861     | 0.0001  | 33.4 | PASS
+PCAWhitenedCosine        | 0.2693 | 0.0094 | 0.2444 | 0.0097 | 0.1907   | 0.0160   | 861     | 1.6724  | 30.7 | PASS
+Vec (Wgt)                | 0.2953 | 0.0063 | 0.2831 | 0.0097 | 0.2120   | 0.0096   | 861     | 0.9964  | 30.7 | PASS
+Log Reg                  | 0.1898 | 0.0047 | 0.1903 | 0.0097 | 0.1223   | 0.0077   | 861     | 0.5203  | 36.7 | PASS
+LDA                      | 0.2882 | 0.0134 | 0.2766 | 0.0097 | 0.2134   | 0.0235   | 861     | 5.1452  | 33.1 | FAIL
+Tiny MLP                 | 0.2465 | 0.0087 | 0.2194 | 0.0097 | 0.1754   | 0.0160   | 861     | 0.9780  | 34.6 | PASS
+MultiProtoCosine         | 0.0591 | 0.0087 | 0.0573 | 0.0097 | 0.0325   | 0.0044   | 861     | 0.8996  | 37.3 | PASS
+WeightedEnsemble         | 0.3591 | 0.0118 | 0.3435 | 0.0097 | 0.2652   | 0.0192   | 861     | 1.4504  | 58.9 | FAIL
+XGBoost                  | 0.1724 | 0.0039 | 0.1742 | 0.0097 | 0.1219   | 0.0047   | 861     | 0.8224  | 51.1 | PASS
+LDA1+LogReg              | 0.1984 | 0.0047 | 0.1992 | 0.0097 | 0.1271   | 0.0077   | 861     | 0.5202  | 33.8 | PASS
+PCA16+LogReg             | 0.2087 | 0.0055 | 0.2137 | 0.0097 | 0.1391   | 0.0086   | 861     | 0.5192  | 35.7 | PASS
+PCA32+LogReg             | 0.2024 | 0.0055 | 0.2032 | 0.0097 | 0.1318   | 0.0086   | 861     | 0.5199  | 36.7 | PASS
+PCA16+VecWeighted        | 0.0150 | 0.0142 | 0.0177 | 0.0097 | 0.0159   | 0.0166   | 861     | 0.0573  | 34.4 | FAIL
+PCA32+VecWeighted        | 0.0283 | 0.0142 | 0.0274 | 0.0097 | 0.0274   | 0.0168   | 861     | 0.0638  | 35.0 | FAIL
+StabilizedWhitenedCosine | 0.2740 | 0.0079 | 0.2524 | 0.0097 | 0.2112   | 0.0122   | 861     | 1.6218  | 33.9 | PASS
+
+[trial=37 seed=79] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.1854, Pooled external calib: TPR=0.3048, FPR=0.0097
+  PrecomputedCosine   : +0.1924
+  PCAWhitenedCosine   : +0.3042
+  XGBoost             : +0.0704
+  Tiny MLP            : +0.4126
+  LDA                 : +0.0204
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.2205 | 0.0094 | 0.2339 | 0.0097 | 0.1946   | 0.0138   | 857     | 0.9967  | 43.2 | PASS
+AndBox-HC                | 0.1551 | 0.0118 | 0.1661 | 0.0097 | 0.1432   | 0.0158   | 857     | 0.0000  | 39.6 | FAIL
+PCAWhitenedCosine        | 0.3134 | 0.0118 | 0.2766 | 0.0097 | 0.2237   | 0.0142   | 857     | 1.6048  | 30.6 | FAIL
+Vec (Wgt)                | 0.3252 | 0.0134 | 0.3097 | 0.0097 | 0.2603   | 0.0213   | 857     | 0.9958  | 30.5 | FAIL
+Log Reg                  | 0.2465 | 0.0110 | 0.2185 | 0.0097 | 0.1612   | 0.0169   | 857     | 0.5179  | 36.4 | FAIL
+LDA                      | 0.2213 | 0.0126 | 0.1992 | 0.0097 | 0.1605   | 0.0172   | 857     | 5.4497  | 32.9 | FAIL
+Tiny MLP                 | 0.2276 | 0.0110 | 0.2024 | 0.0097 | 0.1580   | 0.0147   | 857     | 0.9744  | 34.7 | FAIL
+MultiProtoCosine         | 0.0417 | 0.0118 | 0.0371 | 0.0097 | 0.0282   | 0.0121   | 857     | 0.8992  | 37.1 | FAIL
+WeightedEnsemble         | 0.3244 | 0.0134 | 0.3048 | 0.0097 | 0.2318   | 0.0151   | 857     | 1.1854  | 58.4 | FAIL
+XGBoost                  | 0.2276 | 0.0102 | 0.2032 | 0.0097 | 0.1767   | 0.0134   | 857     | 0.8148  | 50.3 | FAIL
+LDA1+LogReg              | 0.2488 | 0.0110 | 0.2226 | 0.0097 | 0.1640   | 0.0169   | 857     | 0.5178  | 33.8 | FAIL
+PCA16+LogReg             | 0.2528 | 0.0094 | 0.2169 | 0.0097 | 0.1719   | 0.0122   | 857     | 0.5176  | 35.5 | PASS
+PCA32+LogReg             | 0.2559 | 0.0094 | 0.2218 | 0.0097 | 0.1739   | 0.0122   | 857     | 0.5175  | 36.6 | PASS
+PCA16+VecWeighted        | 0.0488 | 0.0134 | 0.0460 | 0.0097 | 0.0357   | 0.0104   | 857     | 0.0617  | 34.3 | FAIL
+PCA32+VecWeighted        | 0.0315 | 0.0087 | 0.0315 | 0.0097 | 0.0241   | 0.0086   | 857     | 0.0672  | 35.2 | PASS
+StabilizedWhitenedCosine | 0.2614 | 0.0087 | 0.2226 | 0.0097 | 0.1804   | 0.0098   | 857     | 1.6848  | 33.9 | PASS
+
+[trial=38 seed=80] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.0289, Pooled external calib: TPR=0.3306, FPR=0.0097
+  PrecomputedCosine   : +0.4364
+  PCAWhitenedCosine   : +0.0571
+  XGBoost             : +0.1048
+  Tiny MLP            : +0.3819
+  LDA                 : +0.0199
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1835 | 0.0118 | 0.1508 | 0.0089 | 0.1291   | 0.0166   | 871     | 1.0000  | 57.1 | FAIL
+AndBox-HC                | 0.1496 | 0.0087 | 0.1419 | 0.0097 | 0.1175   | 0.0123   | 871     | 0.0000  | 33.5 | PASS
+PCAWhitenedCosine        | 0.3236 | 0.0220 | 0.3089 | 0.0097 | 0.2185   | 0.0271   | 871     | 1.6052  | 30.6 | FAIL
+Vec (Wgt)                | 0.2819 | 0.0118 | 0.2798 | 0.0097 | 0.1956   | 0.0165   | 871     | 1.0014  | 30.6 | FAIL
+Log Reg                  | 0.1858 | 0.0110 | 0.1637 | 0.0097 | 0.1076   | 0.0160   | 871     | 0.5213  | 36.9 | FAIL
+LDA                      | 0.2252 | 0.0165 | 0.1968 | 0.0097 | 0.1632   | 0.0200   | 871     | 5.6220  | 33.1 | FAIL
+Tiny MLP                 | 0.2291 | 0.0126 | 0.2048 | 0.0097 | 0.1551   | 0.0177   | 871     | 0.9765  | 34.9 | FAIL
+MultiProtoCosine         | 0.0457 | 0.0118 | 0.0508 | 0.0097 | 0.0287   | 0.0116   | 871     | 0.8990  | 37.6 | FAIL
+WeightedEnsemble         | 0.3323 | 0.0213 | 0.3306 | 0.0097 | 0.2476   | 0.0285   | 871     | 1.0289  | 58.4 | FAIL
+XGBoost                  | 0.2024 | 0.0142 | 0.2137 | 0.0097 | 0.1428   | 0.0182   | 871     | 0.8151  | 50.5 | FAIL
+LDA1+LogReg              | 0.1858 | 0.0110 | 0.1629 | 0.0097 | 0.1076   | 0.0160   | 871     | 0.5212  | 34.3 | FAIL
+PCA16+LogReg             | 0.1724 | 0.0094 | 0.1524 | 0.0097 | 0.0998   | 0.0126   | 871     | 0.5217  | 35.9 | PASS
+PCA32+LogReg             | 0.1693 | 0.0102 | 0.1532 | 0.0097 | 0.0963   | 0.0143   | 871     | 0.5219  | 36.7 | FAIL
+PCA16+VecWeighted        | 0.1102 | 0.0087 | 0.0944 | 0.0097 | 0.0583   | 0.0125   | 871     | 0.0539  | 34.5 | PASS
+PCA32+VecWeighted        | 0.0992 | 0.0071 | 0.0855 | 0.0097 | 0.0515   | 0.0092   | 871     | 0.0629  | 35.1 | PASS
+StabilizedWhitenedCosine | 0.3157 | 0.0173 | 0.3331 | 0.0097 | 0.2215   | 0.0243   | 871     | 1.5222  | 34.8 | FAIL
+
+[trial=39 seed=81] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.2620, Pooled external calib: TPR=0.2968, FPR=0.0097
+  PrecomputedCosine   : +0.6579
+  PCAWhitenedCosine   : +0.1446
+  XGBoost             : +0.0673
+  Tiny MLP            : +0.0713
+  LDA                 : +0.0589
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1740 | 0.0118 | 0.1556 | 0.0113 | 0.1423   | 0.0144   | 872     | 1.0000  | 29.7 | FAIL
+AndBox-HC                | 0.1575 | 0.0157 | 0.1685 | 0.0097 | 0.1298   | 0.0197   | 872     | 0.0001  | 32.5 | FAIL
+PCAWhitenedCosine        | 0.2528 | 0.0118 | 0.2452 | 0.0097 | 0.1896   | 0.0183   | 872     | 1.7299  | 30.9 | FAIL
+Vec (Wgt)                | 0.2654 | 0.0126 | 0.2718 | 0.0097 | 0.1965   | 0.0176   | 872     | 1.0020  | 30.8 | FAIL
+Log Reg                  | 0.1669 | 0.0087 | 0.1597 | 0.0097 | 0.1046   | 0.0118   | 872     | 0.5212  | 36.8 | PASS
+LDA                      | 0.1843 | 0.0118 | 0.1774 | 0.0097 | 0.1376   | 0.0150   | 872     | 5.6342  | 33.1 | FAIL
+Tiny MLP                 | 0.2386 | 0.0165 | 0.2258 | 0.0097 | 0.1804   | 0.0234   | 872     | 0.9804  | 34.9 | FAIL
+MultiProtoCosine         | 0.0378 | 0.0071 | 0.0331 | 0.0097 | 0.0184   | 0.0069   | 872     | 0.8992  | 40.6 | PASS
+WeightedEnsemble         | 0.3102 | 0.0142 | 0.2968 | 0.0097 | 0.2338   | 0.0209   | 872     | 1.2620  | 77.7 | FAIL
+XGBoost                  | 0.2465 | 0.0126 | 0.2508 | 0.0089 | 0.1868   | 0.0186   | 872     | 0.8138  | 52.5 | FAIL
+LDA1+LogReg              | 0.1677 | 0.0094 | 0.1597 | 0.0097 | 0.1065   | 0.0126   | 872     | 0.5211  | 38.8 | PASS
+PCA16+LogReg             | 0.1969 | 0.0094 | 0.1798 | 0.0097 | 0.1265   | 0.0126   | 872     | 0.5196  | 38.0 | PASS
+PCA32+LogReg             | 0.1858 | 0.0094 | 0.1758 | 0.0097 | 0.1190   | 0.0126   | 872     | 0.5197  | 36.9 | PASS
+PCA16+VecWeighted        | 0.0661 | 0.0094 | 0.0613 | 0.0097 | 0.0379   | 0.0102   | 872     | 0.0565  | 34.4 | PASS
+PCA32+VecWeighted        | 0.0693 | 0.0079 | 0.0718 | 0.0097 | 0.0458   | 0.0080   | 872     | 0.0607  | 35.3 | PASS
+StabilizedWhitenedCosine | 0.2811 | 0.0150 | 0.2806 | 0.0097 | 0.2147   | 0.0208   | 872     | 1.5643  | 34.0 | FAIL
+
+[trial=40 seed=82] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.1968, Pooled external calib: TPR=0.2645, FPR=0.0097
+  PrecomputedCosine   : +0.5316
+  PCAWhitenedCosine   : +0.2031
+  XGBoost             : +0.0553
+  Tiny MLP            : +0.1785
+  LDA                 : +0.0315
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.2236 | 0.0110 | 0.2097 | 0.0097 | 0.1870   | 0.0131   | 866     | 0.9957  | 29.3 | FAIL
+AndBox-HC                | 0.1780 | 0.0071 | 0.1935 | 0.0097 | 0.1491   | 0.0099   | 866     | 0.0000  | 46.6 | PASS
+PCAWhitenedCosine        | 0.2472 | 0.0079 | 0.2218 | 0.0097 | 0.1672   | 0.0108   | 866     | 1.7106  | 30.3 | PASS
+Vec (Wgt)                | 0.2567 | 0.0079 | 0.2581 | 0.0097 | 0.1842   | 0.0104   | 866     | 1.0037  | 30.1 | PASS
+Log Reg                  | 0.2339 | 0.0063 | 0.2121 | 0.0097 | 0.1478   | 0.0028   | 866     | 0.5177  | 36.5 | PASS
+LDA                      | 0.1031 | 0.0039 | 0.0887 | 0.0097 | 0.0820   | 0.0045   | 866     | 6.0312  | 32.7 | PASS
+Tiny MLP                 | 0.1795 | 0.0094 | 0.1685 | 0.0097 | 0.1298   | 0.0125   | 866     | 0.9851  | 34.3 | PASS
+MultiProtoCosine         | 0.0551 | 0.0039 | 0.0452 | 0.0097 | 0.0271   | 0.0034   | 866     | 0.9012  | 37.1 | PASS
+WeightedEnsemble         | 0.2740 | 0.0087 | 0.2645 | 0.0097 | 0.1921   | 0.0125   | 866     | 1.1968  | 57.9 | PASS
+XGBoost                  | 0.2205 | 0.0055 | 0.2145 | 0.0097 | 0.1742   | 0.0071   | 866     | 0.8061  | 49.8 | PASS
+LDA1+LogReg              | 0.1945 | 0.0063 | 0.1815 | 0.0097 | 0.1162   | 0.0026   | 866     | 0.5191  | 37.8 | PASS
+PCA16+LogReg             | 0.2173 | 0.0063 | 0.2000 | 0.0097 | 0.1360   | 0.0028   | 866     | 0.5182  | 43.8 | PASS
+PCA32+LogReg             | 0.2205 | 0.0063 | 0.2008 | 0.0097 | 0.1409   | 0.0028   | 866     | 0.5180  | 40.1 | PASS
+PCA16+VecWeighted        | 0.0606 | 0.0094 | 0.0508 | 0.0097 | 0.0298   | 0.0087   | 866     | 0.0789  | 42.1 | PASS
+PCA32+VecWeighted        | 0.0386 | 0.0102 | 0.0274 | 0.0097 | 0.0207   | 0.0036   | 866     | 0.0835  | 39.0 | FAIL
+StabilizedWhitenedCosine | 0.2157 | 0.0071 | 0.2145 | 0.0097 | 0.1459   | 0.0094   | 866     | 1.6423  | 34.1 | PASS
+
+[trial=41 seed=83] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.0604, Pooled external calib: TPR=0.3202, FPR=0.0097
+  PrecomputedCosine   : +0.2610
+  PCAWhitenedCosine   : +0.2348
+  XGBoost             : +0.2127
+  Tiny MLP            : +0.2846
+  LDA                 : +0.0070
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms    | OK? 
+---------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1677 | 0.0142 | 0.1774 | 0.0097 | 0.1321   | 0.0155   | 859     | 1.0000  | 43.4  | FAIL
+AndBox-HC                | 0.1441 | 0.0150 | 0.1323 | 0.0097 | 0.1114   | 0.0200   | 859     | 0.0000  | 34.8  | FAIL
+PCAWhitenedCosine        | 0.2835 | 0.0126 | 0.2847 | 0.0097 | 0.2000   | 0.0191   | 859     | 1.5567  | 31.9  | FAIL
+Vec (Wgt)                | 0.2866 | 0.0126 | 0.2750 | 0.0097 | 0.2102   | 0.0147   | 859     | 1.0041  | 33.2  | FAIL
+Log Reg                  | 0.1913 | 0.0110 | 0.2040 | 0.0097 | 0.1227   | 0.0154   | 859     | 0.5194  | 43.6  | FAIL
+LDA                      | 0.0843 | 0.0047 | 0.0887 | 0.0097 | 0.0590   | 0.0068   | 859     | 6.2798  | 42.4  | PASS
+Tiny MLP                 | 0.1756 | 0.0071 | 0.1758 | 0.0097 | 0.1113   | 0.0119   | 859     | 0.9897  | 78.3  | PASS
+MultiProtoCosine         | 0.0638 | 0.0142 | 0.0605 | 0.0097 | 0.0322   | 0.0123   | 859     | 0.9031  | 65.3  | FAIL
+WeightedEnsemble         | 0.3134 | 0.0126 | 0.3202 | 0.0097 | 0.2231   | 0.0180   | 859     | 1.0604  | 114.5 | FAIL
+XGBoost                  | 0.1803 | 0.0071 | 0.1871 | 0.0065 | 0.1224   | 0.0088   | 859     | 0.8121  | 50.9  | PASS
+LDA1+LogReg              | 0.1795 | 0.0126 | 0.1960 | 0.0097 | 0.1132   | 0.0171   | 859     | 0.5196  | 103.8 | FAIL
+PCA16+LogReg             | 0.2000 | 0.0126 | 0.2089 | 0.0097 | 0.1300   | 0.0169   | 859     | 0.5188  | 98.6  | FAIL
+PCA32+LogReg             | 0.1835 | 0.0118 | 0.1968 | 0.0097 | 0.1184   | 0.0160   | 859     | 0.5194  | 79.6  | FAIL
+PCA16+VecWeighted        | 0.0417 | 0.0063 | 0.0419 | 0.0097 | 0.0337   | 0.0085   | 859     | 0.0684  | 43.7  | PASS
+PCA32+VecWeighted        | 0.0315 | 0.0087 | 0.0218 | 0.0097 | 0.0315   | 0.0117   | 859     | 0.0744  | 56.5  | PASS
+StabilizedWhitenedCosine | 0.2441 | 0.0079 | 0.2637 | 0.0097 | 0.1745   | 0.0119   | 859     | 1.6055  | 40.7  | PASS
+
+[trial=42 seed=84] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.6606, Pooled external calib: TPR=0.3548, FPR=0.0097
+  PrecomputedCosine   : +0.2000
+  PCAWhitenedCosine   : +0.2000
+  XGBoost             : +0.2000
+  Tiny MLP            : +0.2000
+  LDA                 : +0.2000
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1795 | 0.0055 | 0.1605 | 0.0105 | 0.1334   | 0.0096   | 866     | 1.0000  | 29.9 | PASS
+AndBox-HC                | 0.1480 | 0.0063 | 0.1129 | 0.0097 | 0.1208   | 0.0110   | 866     | 0.0000  | 36.7 | PASS
+PCAWhitenedCosine        | 0.2732 | 0.0102 | 0.2492 | 0.0097 | 0.1916   | 0.0178   | 866     | 1.6708  | 30.4 | FAIL
+Vec (Wgt)                | 0.3134 | 0.0094 | 0.2919 | 0.0097 | 0.2310   | 0.0157   | 866     | 0.9916  | 30.2 | PASS
+Log Reg                  | 0.2504 | 0.0118 | 0.2282 | 0.0097 | 0.1673   | 0.0152   | 866     | 0.5174  | 36.2 | FAIL
+LDA                      | 0.2976 | 0.0150 | 0.2798 | 0.0097 | 0.2198   | 0.0214   | 866     | 4.7304  | 32.8 | FAIL
+Tiny MLP                 | 0.3315 | 0.0173 | 0.3137 | 0.0097 | 0.2445   | 0.0250   | 866     | 0.9459  | 34.3 | FAIL
+MultiProtoCosine         | 0.0354 | 0.0071 | 0.0315 | 0.0097 | 0.0207   | 0.0056   | 866     | 0.9094  | 37.1 | PASS
+WeightedEnsemble         | 0.3732 | 0.0181 | 0.3548 | 0.0097 | 0.2729   | 0.0265   | 866     | 1.6606  | 57.9 | FAIL
+XGBoost                  | 0.2496 | 0.0110 | 0.2298 | 0.0089 | 0.1817   | 0.0180   | 866     | 0.8126  | 49.9 | FAIL
+LDA1+LogReg              | 0.2480 | 0.0118 | 0.2274 | 0.0097 | 0.1660   | 0.0152   | 866     | 0.5176  | 33.5 | FAIL
+PCA16+LogReg             | 0.2661 | 0.0126 | 0.2476 | 0.0097 | 0.1842   | 0.0178   | 866     | 0.5166  | 35.4 | FAIL
+PCA32+LogReg             | 0.2638 | 0.0126 | 0.2419 | 0.0097 | 0.1829   | 0.0178   | 866     | 0.5168  | 36.3 | FAIL
+PCA16+VecWeighted        | 0.0441 | 0.0165 | 0.0387 | 0.0097 | 0.0341   | 0.0208   | 866     | 0.0664  | 34.1 | FAIL
+PCA32+VecWeighted        | 0.0276 | 0.0094 | 0.0306 | 0.0097 | 0.0309   | 0.0108   | 866     | 0.0765  | 35.0 | PASS
+StabilizedWhitenedCosine | 0.2622 | 0.0087 | 0.2355 | 0.0097 | 0.1796   | 0.0161   | 866     | 1.6119  | 33.6 | PASS
+
+[trial=43 seed=85] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.1095, Pooled external calib: TPR=0.2847, FPR=0.0097
+  PrecomputedCosine   : +0.1369
+  PCAWhitenedCosine   : +0.3322
+  XGBoost             : +0.4468
+  Tiny MLP            : +0.0732
+  LDA                 : +0.0110
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.2063 | 0.0181 | 0.2185 | 0.0097 | 0.1571   | 0.0257   | 849     | 1.0000  | 29.0 | FAIL
+AndBox-HC                | 0.1307 | 0.0094 | 0.1218 | 0.0097 | 0.1098   | 0.0128   | 849     | 0.0000  | 46.1 | PASS
+PCAWhitenedCosine        | 0.2378 | 0.0087 | 0.2452 | 0.0097 | 0.1732   | 0.0126   | 849     | 1.6771  | 30.0 | PASS
+Vec (Wgt)                | 0.2551 | 0.0142 | 0.2710 | 0.0097 | 0.1808   | 0.0205   | 849     | 1.0025  | 29.8 | FAIL
+Log Reg                  | 0.1409 | 0.0094 | 0.1452 | 0.0097 | 0.0945   | 0.0164   | 849     | 0.5236  | 35.9 | PASS
+LDA                      | 0.2087 | 0.0126 | 0.2032 | 0.0097 | 0.1501   | 0.0196   | 849     | 5.3352  | 32.4 | FAIL
+Tiny MLP                 | 0.2457 | 0.0110 | 0.2290 | 0.0097 | 0.1790   | 0.0167   | 849     | 0.9687  | 34.0 | FAIL
+MultiProtoCosine         | 0.0346 | 0.0118 | 0.0460 | 0.0097 | 0.0170   | 0.0118   | 849     | 0.8994  | 36.5 | FAIL
+WeightedEnsemble         | 0.2850 | 0.0102 | 0.2847 | 0.0097 | 0.2048   | 0.0145   | 849     | 1.1095  | 57.7 | FAIL
+XGBoost                  | 0.2567 | 0.0150 | 0.2589 | 0.0097 | 0.1858   | 0.0207   | 849     | 0.8100  | 49.5 | FAIL
+LDA1+LogReg              | 0.1417 | 0.0094 | 0.1468 | 0.0097 | 0.0948   | 0.0164   | 849     | 0.5232  | 33.2 | PASS
+PCA16+LogReg             | 0.1520 | 0.0134 | 0.1645 | 0.0097 | 0.1022   | 0.0228   | 849     | 0.5211  | 34.9 | FAIL
+PCA32+LogReg             | 0.1520 | 0.0126 | 0.1669 | 0.0097 | 0.1021   | 0.0210   | 849     | 0.5211  | 36.0 | FAIL
+PCA16+VecWeighted        | 0.0181 | 0.0102 | 0.0177 | 0.0097 | 0.0184   | 0.0085   | 849     | 0.0541  | 33.8 | FAIL
+PCA32+VecWeighted        | 0.0496 | 0.0079 | 0.0395 | 0.0097 | 0.0291   | 0.0087   | 849     | 0.0610  | 34.6 | PASS
+StabilizedWhitenedCosine | 0.2748 | 0.0126 | 0.2790 | 0.0097 | 0.1984   | 0.0163   | 849     | 1.5379  | 33.2 | FAIL
+
+[trial=44 seed=86] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.1118, Pooled external calib: TPR=0.3161, FPR=0.0097
+  PrecomputedCosine   : +0.3209
+  PCAWhitenedCosine   : +0.3118
+  XGBoost             : +0.3183
+  Tiny MLP            : +0.0373
+  LDA                 : +0.0115
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1866 | 0.0055 | 0.1823 | 0.0097 | 0.1335   | 0.0092   | 852     | 1.0000  | 29.4 | PASS
+AndBox-HC                | 0.1488 | 0.0118 | 0.1702 | 0.0097 | 0.1233   | 0.0213   | 852     | 0.0000  | 33.0 | FAIL
+PCAWhitenedCosine        | 0.2898 | 0.0118 | 0.3000 | 0.0097 | 0.2107   | 0.0140   | 852     | 1.5768  | 30.5 | FAIL
+Vec (Wgt)                | 0.3039 | 0.0094 | 0.3210 | 0.0097 | 0.2154   | 0.0145   | 852     | 0.9905  | 30.9 | PASS
+Log Reg                  | 0.2102 | 0.0094 | 0.2000 | 0.0097 | 0.1392   | 0.0104   | 852     | 0.5178  | 36.1 | PASS
+LDA                      | 0.1850 | 0.0079 | 0.1887 | 0.0097 | 0.1313   | 0.0114   | 852     | 5.6449  | 32.6 | PASS
+Tiny MLP                 | 0.1929 | 0.0071 | 0.1976 | 0.0097 | 0.1384   | 0.0108   | 852     | 0.9758  | 34.4 | PASS
+MultiProtoCosine         | 0.0402 | 0.0165 | 0.0500 | 0.0097 | 0.0316   | 0.0176   | 852     | 0.9011  | 36.8 | FAIL
+WeightedEnsemble         | 0.3039 | 0.0126 | 0.3161 | 0.0097 | 0.2271   | 0.0161   | 852     | 1.1118  | 57.7 | FAIL
+XGBoost                  | 0.2630 | 0.0102 | 0.2879 | 0.0097 | 0.1876   | 0.0153   | 852     | 0.7947  | 50.4 | FAIL
+LDA1+LogReg              | 0.2102 | 0.0094 | 0.2073 | 0.0097 | 0.1386   | 0.0104   | 852     | 0.5176  | 33.6 | PASS
+PCA16+LogReg             | 0.2228 | 0.0094 | 0.2121 | 0.0097 | 0.1452   | 0.0104   | 852     | 0.5175  | 35.2 | PASS
+PCA32+LogReg             | 0.2142 | 0.0094 | 0.2081 | 0.0097 | 0.1428   | 0.0104   | 852     | 0.5175  | 36.2 | PASS
+PCA16+VecWeighted        | 0.0165 | 0.0071 | 0.0161 | 0.0097 | 0.0165   | 0.0074   | 852     | 0.0679  | 33.9 | PASS
+PCA32+VecWeighted        | 0.0071 | 0.0039 | 0.0048 | 0.0097 | 0.0082   | 0.0033   | 852     | 0.0743  | 34.9 | PASS
+StabilizedWhitenedCosine | 0.3362 | 0.0118 | 0.3411 | 0.0097 | 0.2551   | 0.0177   | 852     | 1.3942  | 33.5 | FAIL
+
+[trial=45 seed=87] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.4242, Pooled external calib: TPR=0.3032, FPR=0.0097
+  PrecomputedCosine   : +0.0477
+  PCAWhitenedCosine   : +0.4884
+  XGBoost             : +0.3290
+  Tiny MLP            : +0.0838
+  LDA                 : +0.0511
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1953 | 0.0079 | 0.1944 | 0.0097 | 0.1559   | 0.0090   | 857     | 1.0000  | 29.5 | PASS
+AndBox-HC                | 0.1276 | 0.0031 | 0.1282 | 0.0097 | 0.0943   | 0.0036   | 857     | 0.0000  | 32.1 | PASS
+PCAWhitenedCosine        | 0.2457 | 0.0094 | 0.2718 | 0.0097 | 0.1825   | 0.0135   | 857     | 1.7060  | 30.8 | PASS
+Vec (Wgt)                | 0.2984 | 0.0102 | 0.3185 | 0.0097 | 0.2201   | 0.0171   | 857     | 0.9927  | 30.3 | FAIL
+Log Reg                  | 0.1701 | 0.0063 | 0.1855 | 0.0097 | 0.1073   | 0.0100   | 857     | 0.5209  | 36.6 | PASS
+LDA                      | 0.1236 | 0.0087 | 0.1298 | 0.0097 | 0.1009   | 0.0156   | 857     | 6.2104  | 32.7 | PASS
+Tiny MLP                 | 0.1693 | 0.0110 | 0.1798 | 0.0097 | 0.1227   | 0.0176   | 857     | 0.9838  | 34.8 | FAIL
+MultiProtoCosine         | 0.0457 | 0.0094 | 0.0363 | 0.0097 | 0.0239   | 0.0131   | 857     | 0.8963  | 37.0 | PASS
+WeightedEnsemble         | 0.2661 | 0.0126 | 0.3032 | 0.0097 | 0.1967   | 0.0195   | 857     | 1.4242  | 57.9 | FAIL
+XGBoost                  | 0.2457 | 0.0102 | 0.2484 | 0.0097 | 0.1946   | 0.0102   | 857     | 0.8217  | 49.9 | FAIL
+LDA1+LogReg              | 0.1780 | 0.0063 | 0.1960 | 0.0097 | 0.1116   | 0.0100   | 857     | 0.5208  | 33.6 | PASS
+PCA16+LogReg             | 0.1843 | 0.0071 | 0.2048 | 0.0097 | 0.1163   | 0.0117   | 857     | 0.5200  | 35.5 | PASS
+PCA32+LogReg             | 0.1827 | 0.0071 | 0.2056 | 0.0097 | 0.1171   | 0.0117   | 857     | 0.5202  | 36.3 | PASS
+PCA16+VecWeighted        | 0.0283 | 0.0079 | 0.0258 | 0.0097 | 0.0243   | 0.0056   | 857     | 0.0480  | 34.1 | PASS
+PCA32+VecWeighted        | 0.0236 | 0.0055 | 0.0210 | 0.0097 | 0.0178   | 0.0050   | 857     | 0.0565  | 35.0 | PASS
+StabilizedWhitenedCosine | 0.2913 | 0.0173 | 0.3145 | 0.0097 | 0.2241   | 0.0228   | 857     | 1.5556  | 33.7 | FAIL
+
+[trial=46 seed=88] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.0944, Pooled external calib: TPR=0.3468, FPR=0.0097
+  PrecomputedCosine   : +0.3209
+  PCAWhitenedCosine   : +0.3118
+  XGBoost             : +0.3183
+  Tiny MLP            : +0.0373
+  LDA                 : +0.0115
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1890 | 0.0094 | 0.2105 | 0.0073 | 0.1609   | 0.0144   | 866     | 1.0000  | 55.8 | PASS
+AndBox-HC                | 0.0937 | 0.0047 | 0.1008 | 0.0097 | 0.0873   | 0.0067   | 866     | 0.0001  | 33.4 | PASS
+PCAWhitenedCosine        | 0.2425 | 0.0047 | 0.2637 | 0.0097 | 0.1595   | 0.0087   | 866     | 1.6833  | 30.2 | PASS
+Vec (Wgt)                | 0.3315 | 0.0134 | 0.3492 | 0.0097 | 0.2607   | 0.0231   | 866     | 0.9833  | 30.2 | FAIL
+Log Reg                  | 0.1638 | 0.0079 | 0.1669 | 0.0097 | 0.1105   | 0.0094   | 866     | 0.5204  | 36.6 | PASS
+LDA                      | 0.2575 | 0.0181 | 0.2927 | 0.0097 | 0.1801   | 0.0280   | 866     | 5.2295  | 32.8 | FAIL
+Tiny MLP                 | 0.2102 | 0.0118 | 0.2339 | 0.0097 | 0.1414   | 0.0196   | 866     | 0.9810  | 34.3 | FAIL
+MultiProtoCosine         | 0.0386 | 0.0016 | 0.0250 | 0.0097 | 0.0194   | 0.0026   | 866     | 0.9040  | 36.7 | PASS
+WeightedEnsemble         | 0.3441 | 0.0094 | 0.3468 | 0.0097 | 0.2370   | 0.0152   | 866     | 1.0944  | 62.8 | PASS
+XGBoost                  | 0.2449 | 0.0063 | 0.2669 | 0.0081 | 0.1813   | 0.0113   | 866     | 0.8002  | 50.5 | PASS
+LDA1+LogReg              | 0.1638 | 0.0079 | 0.1669 | 0.0097 | 0.1105   | 0.0094   | 866     | 0.5203  | 42.4 | PASS
+PCA16+LogReg             | 0.1756 | 0.0087 | 0.1798 | 0.0097 | 0.1173   | 0.0112   | 866     | 0.5190  | 42.0 | PASS
+PCA32+LogReg             | 0.1803 | 0.0087 | 0.1823 | 0.0097 | 0.1195   | 0.0112   | 866     | 0.5186  | 36.4 | PASS
+PCA16+VecWeighted        | 0.0291 | 0.0055 | 0.0185 | 0.0097 | 0.0176   | 0.0042   | 866     | 0.0718  | 34.1 | PASS
+PCA32+VecWeighted        | 0.0039 | 0.0102 | 0.0008 | 0.0097 | 0.0046   | 0.0033   | 866     | 0.0764  | 34.8 | FAIL
+StabilizedWhitenedCosine | 0.2843 | 0.0063 | 0.3056 | 0.0097 | 0.1914   | 0.0100   | 866     | 1.5137  | 33.9 | PASS
+
+[trial=47 seed=89] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.4918, Pooled external calib: TPR=0.3242, FPR=0.0097
+  PrecomputedCosine   : +0.1817
+  PCAWhitenedCosine   : +0.4603
+  XGBoost             : +0.0868
+  Tiny MLP            : +0.1854
+  LDA                 : +0.0858
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms    | OK? 
+---------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1669 | 0.0079 | 0.1645 | 0.0089 | 0.1217   | 0.0088   | 870     | 1.0000  | 37.6  | PASS
+AndBox-HC                | 0.1622 | 0.0063 | 0.1540 | 0.0097 | 0.1303   | 0.0113   | 870     | 0.0000  | 33.7  | PASS
+PCAWhitenedCosine        | 0.2811 | 0.0094 | 0.2750 | 0.0097 | 0.2149   | 0.0136   | 870     | 1.6400  | 42.7  | PASS
+Vec (Wgt)                | 0.3110 | 0.0110 | 0.3089 | 0.0097 | 0.2313   | 0.0164   | 870     | 0.9942  | 49.8  | FAIL
+Log Reg                  | 0.1850 | 0.0118 | 0.1815 | 0.0097 | 0.1244   | 0.0175   | 870     | 0.5217  | 53.1  | FAIL
+LDA                      | 0.1535 | 0.0110 | 0.1403 | 0.0097 | 0.1261   | 0.0182   | 870     | 5.8227  | 36.9  | FAIL
+Tiny MLP                 | 0.2260 | 0.0197 | 0.2048 | 0.0097 | 0.1675   | 0.0309   | 870     | 0.9753  | 45.0  | FAIL
+MultiProtoCosine         | 0.0465 | 0.0087 | 0.0532 | 0.0097 | 0.0360   | 0.0122   | 870     | 0.8939  | 51.4  | PASS
+WeightedEnsemble         | 0.3480 | 0.0181 | 0.3242 | 0.0097 | 0.2650   | 0.0309   | 870     | 1.4918  | 112.5 | FAIL
+XGBoost                  | 0.2984 | 0.0126 | 0.2823 | 0.0097 | 0.2193   | 0.0152   | 870     | 0.8016  | 58.6  | FAIL
+LDA1+LogReg              | 0.1843 | 0.0118 | 0.1815 | 0.0097 | 0.1246   | 0.0175   | 870     | 0.5218  | 68.0  | FAIL
+PCA16+LogReg             | 0.1803 | 0.0118 | 0.1790 | 0.0097 | 0.1199   | 0.0188   | 870     | 0.5217  | 52.8  | FAIL
+PCA32+LogReg             | 0.1874 | 0.0118 | 0.1815 | 0.0097 | 0.1268   | 0.0188   | 870     | 0.5216  | 39.6  | FAIL
+PCA16+VecWeighted        | 0.0677 | 0.0063 | 0.0702 | 0.0097 | 0.0576   | 0.0070   | 870     | 0.0563  | 52.1  | PASS
+PCA32+VecWeighted        | 0.0559 | 0.0079 | 0.0597 | 0.0097 | 0.0456   | 0.0076   | 870     | 0.0636  | 64.7  | PASS
+StabilizedWhitenedCosine | 0.2811 | 0.0126 | 0.2742 | 0.0097 | 0.2052   | 0.0220   | 870     | 1.5640  | 44.0  | FAIL
+
+[trial=48 seed=90] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.3875, Pooled external calib: TPR=0.2968, FPR=0.0097
+  PrecomputedCosine   : +0.0477
+  PCAWhitenedCosine   : +0.4884
+  XGBoost             : +0.3290
+  Tiny MLP            : +0.0838
+  LDA                 : +0.0511
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1937 | 0.0063 | 0.1927 | 0.0097 | 0.1624   | 0.0106   | 861     | 1.0000  | 56.0 | PASS
+AndBox-HC                | 0.1260 | 0.0102 | 0.1331 | 0.0097 | 0.1047   | 0.0149   | 861     | 0.0001  | 33.5 | FAIL
+PCAWhitenedCosine        | 0.2512 | 0.0102 | 0.2782 | 0.0097 | 0.1998   | 0.0157   | 861     | 1.6384  | 41.5 | FAIL
+Vec (Wgt)                | 0.2811 | 0.0094 | 0.2879 | 0.0097 | 0.2203   | 0.0155   | 861     | 0.9967  | 30.8 | PASS
+Log Reg                  | 0.1764 | 0.0087 | 0.1879 | 0.0097 | 0.1214   | 0.0132   | 861     | 0.5206  | 36.7 | PASS
+LDA                      | 0.1173 | 0.0071 | 0.1306 | 0.0097 | 0.0908   | 0.0118   | 861     | 6.1751  | 32.7 | PASS
+Tiny MLP                 | 0.1717 | 0.0110 | 0.1984 | 0.0097 | 0.1285   | 0.0204   | 861     | 0.9849  | 34.6 | FAIL
+MultiProtoCosine         | 0.0433 | 0.0087 | 0.0403 | 0.0097 | 0.0227   | 0.0059   | 861     | 0.9075  | 37.0 | PASS
+WeightedEnsemble         | 0.2764 | 0.0142 | 0.2968 | 0.0097 | 0.2138   | 0.0223   | 861     | 1.3875  | 58.6 | FAIL
+XGBoost                  | 0.2394 | 0.0079 | 0.2355 | 0.0097 | 0.1835   | 0.0129   | 861     | 0.8191  | 50.2 | PASS
+LDA1+LogReg              | 0.1787 | 0.0094 | 0.1895 | 0.0097 | 0.1239   | 0.0149   | 861     | 0.5203  | 34.3 | PASS
+PCA16+LogReg             | 0.1882 | 0.0126 | 0.2040 | 0.0097 | 0.1346   | 0.0209   | 861     | 0.5197  | 36.0 | FAIL
+PCA32+LogReg             | 0.1850 | 0.0134 | 0.2016 | 0.0097 | 0.1325   | 0.0227   | 861     | 0.5198  | 36.4 | FAIL
+PCA16+VecWeighted        | 0.0276 | 0.0142 | 0.0226 | 0.0097 | 0.0251   | 0.0185   | 861     | 0.0637  | 34.3 | FAIL
+PCA32+VecWeighted        | 0.0528 | 0.0197 | 0.0565 | 0.0097 | 0.0543   | 0.0252   | 861     | 0.0651  | 35.0 | FAIL
+StabilizedWhitenedCosine | 0.2598 | 0.0102 | 0.2815 | 0.0089 | 0.1972   | 0.0150   | 861     | 1.5591  | 34.4 | FAIL
+
+[trial=49 seed=91] GLOBAL mode — total_samples=200000
+  total: h0=82063 h1=15019
+  pooled_train:  n0=1270 n1=1270
+  pooled_calib:  n0=1240 n1=1240
+  pooled_eval:   n0=1270 n1=1270
+  regions (for macro stats only): 1103
+[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)
+[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum
+  [Ensemble] Judges routed to 'alt' input: PrecomputedCosine
+[WeightedEnsemble] Fitted weights (alpha=0.0100, external calib):
+  tau=1.1401, Pooled external calib: TPR=0.3589, FPR=0.0097
+  PrecomputedCosine   : +0.2832
+  PCAWhitenedCosine   : +0.0456
+  XGBoost             : +0.2004
+  Tiny MLP            : +0.4151
+  LDA                 : +0.0558
+
+Method                   | TPR    | FPR    | TrTPR  | TrFPR  | MacroTPR | MacroFPR | Regions | TauMean | ms   | OK? 
+--------------------------------------------------------------------------------------------------------------------
+Cosine                   | 0.1693 | 0.0071 | 0.1863 | 0.0105 | 0.1322   | 0.0081   | 859     | 1.0000  | 30.4 | PASS
+AndBox-HC                | 0.1165 | 0.0118 | 0.1185 | 0.0097 | 0.0967   | 0.0172   | 859     | 0.0001  | 33.0 | FAIL
+PCAWhitenedCosine        | 0.2457 | 0.0079 | 0.2661 | 0.0097 | 0.1911   | 0.0141   | 859     | 1.6792  | 30.5 | PASS
+Vec (Wgt)                | 0.2402 | 0.0039 | 0.2750 | 0.0097 | 0.1768   | 0.0046   | 859     | 1.0128  | 30.3 | PASS
+Log Reg                  | 0.2528 | 0.0157 | 0.2548 | 0.0097 | 0.1658   | 0.0261   | 859     | 0.5167  | 36.7 | FAIL
+LDA                      | 0.1724 | 0.0087 | 0.1734 | 0.0097 | 0.1312   | 0.0147   | 859     | 5.9157  | 33.6 | PASS
+Tiny MLP                 | 0.2677 | 0.0142 | 0.2887 | 0.0097 | 0.2101   | 0.0232   | 859     | 0.9690  | 34.6 | FAIL
+MultiProtoCosine         | 0.0409 | 0.0126 | 0.0540 | 0.0097 | 0.0257   | 0.0092   | 859     | 0.9054  | 38.6 | FAIL
+WeightedEnsemble         | 0.3315 | 0.0165 | 0.3589 | 0.0097 | 0.2619   | 0.0270   | 859     | 1.1401  | 58.3 | FAIL
+XGBoost                  | 0.1756 | 0.0039 | 0.2000 | 0.0097 | 0.1255   | 0.0043   | 859     | 0.8231  | 50.4 | PASS
+LDA1+LogReg              | 0.2520 | 0.0157 | 0.2565 | 0.0097 | 0.1656   | 0.0261   | 859     | 0.5168  | 33.3 | FAIL
+PCA16+LogReg             | 0.2465 | 0.0134 | 0.2508 | 0.0097 | 0.1634   | 0.0208   | 859     | 0.5170  | 35.7 | FAIL
+PCA32+LogReg             | 0.2535 | 0.0134 | 0.2589 | 0.0097 | 0.1682   | 0.0208   | 859     | 0.5169  | 36.5 | FAIL
+PCA16+VecWeighted        | 0.1110 | 0.0087 | 0.1153 | 0.0097 | 0.0679   | 0.0116   | 859     | 0.0544  | 34.1 | PASS
+PCA32+VecWeighted        | 0.1142 | 0.0118 | 0.1137 | 0.0097 | 0.0644   | 0.0138   | 859     | 0.0575  | 35.1 | FAIL
+StabilizedWhitenedCosine | 0.2559 | 0.0087 | 0.2782 | 0.0097 | 0.1827   | 0.0159   | 859     | 1.6357  | 34.1 | PASS
+
+=== Ranking by mean micro TPR (UNCONSTRAINED) ===
+ 1. WeightedEnsemble   TPR=0.3014±0.0354 FPR=0.0130±0.0037 [FAIL]
+ 2. Vec (Wgt)          TPR=0.2875±0.0335 FPR=0.0105±0.0039 [FAIL]
+ 3. StabilizedWhitenedCosine TPR=0.2615±0.0348 FPR=0.0096±0.0040 [PASS]
+ 4. PCAWhitenedCosine  TPR=0.2457±0.0416 FPR=0.0091±0.0038 [PASS]
+ 5. XGBoost            TPR=0.2348±0.0441 FPR=0.0094±0.0037 [PASS]
+ 6. Tiny MLP           TPR=0.2076±0.0395 FPR=0.0104±0.0037 [FAIL]
+ 7. PCA32+LogReg       TPR=0.1969±0.0367 FPR=0.0100±0.0039 [FAIL]
+ 8. PCA16+LogReg       TPR=0.1967±0.0365 FPR=0.0099±0.0039 [PASS]
+ 9. Log Reg            TPR=0.1934±0.0359 FPR=0.0099±0.0040 [PASS]
+10. LDA1+LogReg        TPR=0.1916±0.0361 FPR=0.0101±0.0042 [FAIL]
+11. Cosine             TPR=0.1911±0.0322 FPR=0.0103±0.0036 [FAIL]
+12. LDA                TPR=0.1640±0.0595 FPR=0.0102±0.0042 [FAIL]
+13. AndBox-HC          TPR=0.1522±0.0379 FPR=0.0103±0.0042 [FAIL]
+14. MultiProtoCosine   TPR=0.0465±0.0116 FPR=0.0097±0.0043 [PASS]
+15. PCA32+VecWeighted  TPR=0.0460±0.0286 FPR=0.0100±0.0045 [PASS]
+16. PCA16+VecWeighted  TPR=0.0450±0.0302 FPR=0.0091±0.0033 [PASS]
+
+=== Ranking by mean micro TPR (CONSTRAINED: FPR <= alpha) ===
+ 1. StabilizedWhitenedCosine TPR=0.2615±0.0348 FPR=0.0096±0.0040
+ 2. PCAWhitenedCosine  TPR=0.2457±0.0416 FPR=0.0091±0.0038
+ 3. XGBoost            TPR=0.2348±0.0441 FPR=0.0094±0.0037
+ 4. PCA16+LogReg       TPR=0.1967±0.0365 FPR=0.0099±0.0039
+ 5. Log Reg            TPR=0.1934±0.0359 FPR=0.0099±0.0040
+ 6. MultiProtoCosine   TPR=0.0465±0.0116 FPR=0.0097±0.0043
+ 7. PCA32+VecWeighted  TPR=0.0460±0.0286 FPR=0.0100±0.0045
+ 8. PCA16+VecWeighted  TPR=0.0450±0.0302 FPR=0.0091±0.0033
+[CSV] Saved: /home/malmatal/Projects/Multi_Dim_Threshold/NeighborCache/outputs/region_local_threshold/run_20260507_082245/trial_summary.csv
+[JSON] Saved: /home/malmatal/Projects/Multi_Dim_Threshold/NeighborCache/outputs/region_local_threshold/run_20260507_082245/ranking.json
+[CSV] Saved: /home/malmatal/Projects/Multi_Dim_Threshold/NeighborCache/outputs/region_local_threshold/run_20260507_082245/weighted_ensemble_meta_weights.csv
+[JSON] Saved: /home/malmatal/Projects/Multi_Dim_Threshold/NeighborCache/outputs/region_local_threshold/run_20260507_082245/notes.json
+
+Best (constrained FPR <= alpha): StabilizedWhitenedCosine
+[Done] outputs at: /home/malmatal/Projects/Multi_Dim_Threshold/NeighborCache/outputs/region_local_threshold/run_20260507_082245

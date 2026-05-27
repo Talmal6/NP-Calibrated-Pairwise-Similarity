@@ -1,0 +1,41 @@
+------------------------------------
+Mon 11 May 2026 14:51:11 IDT
+SLURM_JOBID:		17480194
+SLURM_JOB_NODELIST:	ise-4090-03
+SLURM_SCRATCH_DIR:	/scratch/malmatal/17480194
+Allocated Resouces:	cpu - 4 / mem - 32768 MB / gpu - 1
+SLURM_GPU_INDEX:	1
+Running as malmatal from gilein account with normal QOS
+------------------------------------
+Launcher job started
+SLURM_JOB_ID=17480194
+HOSTNAME=ise-4090-03.auth.ad.bgu.ac.il
+DATE=2026-05-11T14:51:11+03:00
+CONDA_ENV_NAME=ec
+SUITE=paper
+MAX_PARALLEL=4
+conda command found
+Using Python from env:
+/home/malmatal/.conda/envs/ec/bin/python
+
+Python environment check OK: /home/malmatal/.conda/envs/ec/bin/python
+Submitted batch job 17480195
+Using Python: /home/malmatal/.conda/envs/ec/bin/python
+
+Generated 24 Slurm array tasks.
+Experiment root: NeighborCache/results/paper_normal_20260511_145113
+Commands file:   NeighborCache/results/paper_normal_20260511_145113/commands.txt
+Commands TSV:    NeighborCache/results/paper_normal_20260511_145113/commands.tsv
+Failed TSV:      NeighborCache/results/paper_normal_20260511_145113/failed_commands.tsv
+Metadata:        NeighborCache/results/paper_normal_20260511_145113/run_metadata.txt
+Sbatch file:     NeighborCache/results/paper_normal_20260511_145113/slurm/neighborcache_experiment_array.sbatch
+
+Task groups:
+  calib_size_ablation         8
+  main_alpha_sweep            8
+  train_size_ablation         8
+
+Submit command:
+sbatch --job-name=grand2_4090 --array=1-24%4 --time=04:00:00 --cpus-per-task=4 --mem=32G --output=NeighborCache/results/paper_normal_20260511_145113/slurm/%x_%A_%a.out --error=NeighborCache/results/paper_normal_20260511_145113/slurm/%x_%A_%a.err --export=ALL,COMMANDS_FILE=NeighborCache/results/paper_normal_20260511_145113/commands.txt,COMMANDS_TSV=NeighborCache/results/paper_normal_20260511_145113/commands.tsv,FAILED_TSV=NeighborCache/results/paper_normal_20260511_145113/failed_commands.tsv,EXP_ROOT=NeighborCache/results/paper_normal_20260511_145113 --partition=gpu --gres=gpu:rtx_4090:1 NeighborCache/results/paper_normal_20260511_145113/slurm/neighborcache_experiment_array.sbatch
+
+Launcher job finished
