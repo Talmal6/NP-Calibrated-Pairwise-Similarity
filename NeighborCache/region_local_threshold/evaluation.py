@@ -425,12 +425,18 @@ def fit_all_methods(
                 continue
 
             # Special handling for ensemble methods with per-judge routing.
-            if name in {"WeightedEnsemble", "RegionalWeightedEnsemble"}:
+            if name in {
+                "WeightedEnsemble",
+                "RandomForestEnsemble",
+                "WeightedEnsembleNoPCAWhitenedCosine",
+                "RandomForestEnsembleNoPCAWhitenedCosine",
+                "RegionalWeightedEnsemble",
+            }:
                 # In local contexts we require pure calib inputs for external meta-calibration.
                 has_pure_calib = H0_calib_pure is not None and H1_calib_pure is not None
                 if require_pure_calib_for_ensemble and not has_pure_calib:
                     msg = (
-                        f"trial={trial}: WeightedEnsemble requires pure calib in fit_context={fit_context}, "
+                        f"trial={trial}: {name} requires pure calib in fit_context={fit_context}, "
                         "but H*_calib_pure is unavailable; skipping method"
                     )
                     failures[name].append(msg)
@@ -448,7 +454,7 @@ def fit_all_methods(
                 if fit_context in {"local", "matched_global_on_local"}:
                     print(
                         "[DEBUG][WeightedEnsemble][fit_all_methods] "
-                        f"context={fit_context} "
+                        f"method={name} context={fit_context} "
                         f"using_pure_calib={bool(has_pure_calib)} "
                         f"H0_train={int(H0_train_use.shape[0])} H1_train={int(H1_train_use.shape[0])} "
                         f"H0_calib_pure={int(H0_calib_pure.shape[0]) if H0_calib_pure is not None else -1} "

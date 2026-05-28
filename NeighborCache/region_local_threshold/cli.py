@@ -1568,7 +1568,13 @@ def _ensemble_config_from_args(args: argparse.Namespace) -> Any:
     )
 
 
-def _build_ensemble_judges(args: argparse.Namespace, *, use_precomputed_cosine: bool, has_xgb: bool) -> List[Any]:
+def _build_ensemble_judges(
+    args: argparse.Namespace,
+    *,
+    use_precomputed_cosine: bool,
+    has_xgb: bool,
+    include_whitened: bool = True,
+) -> List[Any]:
     from np_bench.methods.cosine import CosineMethod
     from np_bench.methods.lda import LDAMethod
     from np_bench.methods.tiny_mlp import TinyMLPMethod
@@ -1580,11 +1586,12 @@ def _build_ensemble_judges(args: argparse.Namespace, *, use_precomputed_cosine: 
     else:
         judges.append(CosineMethod())
 
-    try:
-        from np_bench.methods.whitened_cosine import WhitenedCosineMethod
-        judges.append(WhitenedCosineMethod(**_whitened_cosine_kwargs_from_args(args)))
-    except Exception:
-        pass
+    if include_whitened:
+        try:
+            from np_bench.methods.whitened_cosine import WhitenedCosineMethod
+            judges.append(WhitenedCosineMethod(**_whitened_cosine_kwargs_from_args(args)))
+        except Exception:
+            pass
 
     if has_xgb:
         try:
@@ -1675,6 +1682,58 @@ def _build_configured_methods(
     except Exception as exc:
         if not quiet:
             print(f"[WARN] Could not configure WeightedEnsemble: {exc}")
+
+    try:
+        from np_bench.methods.weighted_ensemble import WeightedEnsembleMethod
+        methods["WeightedEnsembleNoPCAWhitenedCosine"] = WeightedEnsembleMethod(
+            judges=_build_ensemble_judges(
+                args,
+                use_precomputed_cosine=use_precomputed_cosine,
+                has_xgb=has_xgb,
+                include_whitened=False,
+            ),
+            config=_ensemble_config_from_args(args),
+        )
+        methods["WeightedEnsembleNoPCAWhitenedCosine"].name = "WeightedEnsembleNoPCAWhitenedCosine"
+        if use_precomputed_cosine and not quiet:
+            print("[INFO] WeightedEnsembleNoPCAWhitenedCosine Cosine judge routed to direct Hadamard sum")
+    except Exception as exc:
+        if not quiet:
+            print(f"[WARN] Could not configure WeightedEnsembleNoPCAWhitenedCosine: {exc}")
+
+    try:
+        from np_bench.methods.random_forest_ensemble import RandomForestEnsembleMethod
+        methods["RandomForestEnsemble"] = RandomForestEnsembleMethod(
+            judges=_build_ensemble_judges(
+                args,
+                use_precomputed_cosine=use_precomputed_cosine,
+                has_xgb=has_xgb,
+            ),
+            config=_ensemble_config_from_args(args),
+        )
+        if use_precomputed_cosine and not quiet:
+            print("[INFO] RandomForestEnsemble Cosine judge routed to direct Hadamard sum")
+    except Exception as exc:
+        if not quiet:
+            print(f"[WARN] Could not configure RandomForestEnsemble: {exc}")
+
+    try:
+        from np_bench.methods.random_forest_ensemble import RandomForestEnsembleMethod
+        methods["RandomForestEnsembleNoPCAWhitenedCosine"] = RandomForestEnsembleMethod(
+            judges=_build_ensemble_judges(
+                args,
+                use_precomputed_cosine=use_precomputed_cosine,
+                has_xgb=has_xgb,
+                include_whitened=False,
+            ),
+            config=_ensemble_config_from_args(args),
+        )
+        methods["RandomForestEnsembleNoPCAWhitenedCosine"].name = "RandomForestEnsembleNoPCAWhitenedCosine"
+        if use_precomputed_cosine and not quiet:
+            print("[INFO] RandomForestEnsembleNoPCAWhitenedCosine Cosine judge routed to direct Hadamard sum")
+    except Exception as exc:
+        if not quiet:
+            print(f"[WARN] Could not configure RandomForestEnsembleNoPCAWhitenedCosine: {exc}")
 
     try:
         from np_bench.methods.stabilized_whitened_cosine import StabilizedWhitenedCosineMethod
@@ -3472,7 +3531,13 @@ def main(argv: Optional[List[str]] = None) -> None:
                     # In hadamard mode, direct sum(hadamard row) is the cosine-to-anchor signal.
                     # Route the "Cosine" baseline to this scalar path to avoid refitting prototype cosine.
                     methods["Cosine"] = PrecomputedCosineMethod()
-                    for ens_name in ["WeightedEnsemble", "RegionalWeightedEnsemble"]:
+                    for ens_name in [
+                        "WeightedEnsemble",
+                        "RandomForestEnsemble",
+                        "WeightedEnsembleNoPCAWhitenedCosine",
+                        "RandomForestEnsembleNoPCAWhitenedCosine",
+                        "RegionalWeightedEnsemble",
+                    ]:
                         if ens_name in methods and hasattr(methods[ens_name], "judges"):
                             ens = methods[ens_name]
                             new_judges = []
@@ -3485,6 +3550,12 @@ def main(argv: Optional[List[str]] = None) -> None:
                     print("[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)")
                     if "WeightedEnsemble" in methods:
                         print("[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum")
+                    if "RandomForestEnsemble" in methods:
+                        print("[INFO] RandomForestEnsemble Cosine judge routed to direct Hadamard sum")
+                    if "WeightedEnsembleNoPCAWhitenedCosine" in methods:
+                        print("[INFO] WeightedEnsembleNoPCAWhitenedCosine Cosine judge routed to direct Hadamard sum")
+                    if "RandomForestEnsembleNoPCAWhitenedCosine" in methods:
+                        print("[INFO] RandomForestEnsembleNoPCAWhitenedCosine Cosine judge routed to direct Hadamard sum")
                     if "RegionalWeightedEnsemble" in methods:
                         print("[INFO] RegionalWeightedEnsemble Cosine judge routed to direct Hadamard sum")
                 except Exception as exc:
@@ -4141,7 +4212,13 @@ def main(argv: Optional[List[str]] = None) -> None:
                     # In hadamard mode, direct sum(hadamard row) is the cosine-to-anchor signal.
                     # Route the "Cosine" baseline to this scalar path to avoid refitting prototype cosine.
                     methods["Cosine"] = PrecomputedCosineMethod()
-                    for ens_name in ["WeightedEnsemble", "RegionalWeightedEnsemble"]:
+                    for ens_name in [
+                        "WeightedEnsemble",
+                        "RandomForestEnsemble",
+                        "WeightedEnsembleNoPCAWhitenedCosine",
+                        "RandomForestEnsembleNoPCAWhitenedCosine",
+                        "RegionalWeightedEnsemble",
+                    ]:
                         if ens_name in methods and hasattr(methods[ens_name], "judges"):
                             ens = methods[ens_name]
                             new_judges = []
@@ -4154,6 +4231,12 @@ def main(argv: Optional[List[str]] = None) -> None:
                     print("[INFO] Cosine baseline routed to direct Hadamard sum (PrecomputedCosine)")
                     if "WeightedEnsemble" in methods:
                         print("[INFO] WeightedEnsemble Cosine judge routed to direct Hadamard sum")
+                    if "RandomForestEnsemble" in methods:
+                        print("[INFO] RandomForestEnsemble Cosine judge routed to direct Hadamard sum")
+                    if "WeightedEnsembleNoPCAWhitenedCosine" in methods:
+                        print("[INFO] WeightedEnsembleNoPCAWhitenedCosine Cosine judge routed to direct Hadamard sum")
+                    if "RandomForestEnsembleNoPCAWhitenedCosine" in methods:
+                        print("[INFO] RandomForestEnsembleNoPCAWhitenedCosine Cosine judge routed to direct Hadamard sum")
                     if "RegionalWeightedEnsemble" in methods:
                         print("[INFO] RegionalWeightedEnsemble Cosine judge routed to direct Hadamard sum")
                 except Exception as exc:
@@ -4378,15 +4461,21 @@ def main(argv: Optional[List[str]] = None) -> None:
                         try:
                             from np_bench.methods.precomputed_cosine import PrecomputedCosineMethod
                             methods_matched["Cosine"] = PrecomputedCosineMethod()
-                            if "WeightedEnsemble" in methods_matched and hasattr(methods_matched["WeightedEnsemble"], "judges"):
-                                we_m = methods_matched["WeightedEnsemble"]
-                                new_judges_m = []
-                                for j in list(getattr(we_m, "judges", [])):
-                                    if str(getattr(j, "name", "")) == "Cosine":
-                                        new_judges_m.append(PrecomputedCosineMethod())
-                                    else:
-                                        new_judges_m.append(j)
-                                we_m.judges = new_judges_m
+                            for ens_name in [
+                                "WeightedEnsemble",
+                                "RandomForestEnsemble",
+                                "WeightedEnsembleNoPCAWhitenedCosine",
+                                "RandomForestEnsembleNoPCAWhitenedCosine",
+                            ]:
+                                if ens_name in methods_matched and hasattr(methods_matched[ens_name], "judges"):
+                                    ens_m = methods_matched[ens_name]
+                                    new_judges_m = []
+                                    for j in list(getattr(ens_m, "judges", [])):
+                                        if str(getattr(j, "name", "")) == "Cosine":
+                                            new_judges_m.append(PrecomputedCosineMethod())
+                                        else:
+                                            new_judges_m.append(j)
+                                    ens_m.judges = new_judges_m
                         except Exception:
                             pass
 

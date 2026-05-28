@@ -96,6 +96,9 @@ _TRAIN_REQUIRED_NAMES = {
     "Tiny MLP",
     "XGBoost",
     "WeightedEnsemble",
+    "RandomForestEnsemble",
+    "WeightedEnsembleNoPCAWhitenedCosine",
+    "RandomForestEnsembleNoPCAWhitenedCosine",
 }
 
 

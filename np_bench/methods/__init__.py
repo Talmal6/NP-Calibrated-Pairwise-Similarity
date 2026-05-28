@@ -18,6 +18,7 @@ from .whitened_cosine import WhitenedCosineMethod
 
 # Ensemble
 from .weighted_ensemble import WeightedEnsembleMethod
+from .random_forest_ensemble import RandomForestEnsembleMethod
 
 # Hadamard / Fisher family
 from .fisher_hadamard_methods import HadamardCosineMethod
@@ -97,7 +98,11 @@ def _make_main_whitened_method() -> OnlineBaseMethod:
     )
 
 
-def _make_ensemble_judges(has_xgb: bool) -> list[OnlineBaseMethod]:
+def _make_ensemble_judges(
+    has_xgb: bool,
+    *,
+    include_whitened: bool = True,
+) -> list[OnlineBaseMethod]:
     """
     Build fresh judge instances for WeightedEnsemble.
 
@@ -113,14 +118,28 @@ def _make_ensemble_judges(has_xgb: bool) -> list[OnlineBaseMethod]:
         if XGBoostLightMethod is not None:
             judges.append(XGBoostLightMethod())
 
-    judges.extend(
-        [
-            WhitenedCosineMethod(),
-            LDAMethod(),
-        ]
-    )
+    if include_whitened:
+        judges.append(WhitenedCosineMethod())
+
+    judges.append(LDAMethod())
 
     return judges
+
+
+def _make_weighted_ensemble_without_pca(has_xgb: bool) -> WeightedEnsembleMethod:
+    method = WeightedEnsembleMethod(
+        judges=_make_ensemble_judges(has_xgb, include_whitened=False),
+    )
+    method.name = "WeightedEnsembleNoPCAWhitenedCosine"
+    return method
+
+
+def _make_random_forest_ensemble_without_pca(has_xgb: bool) -> RandomForestEnsembleMethod:
+    method = RandomForestEnsembleMethod(
+        judges=_make_ensemble_judges(has_xgb, include_whitened=False),
+    )
+    method.name = "RandomForestEnsembleNoPCAWhitenedCosine"
+    return method
 
 
 def _make_ablation_suite() -> list[OnlineBaseMethod]:
@@ -234,6 +253,13 @@ def get_default_methods(
                 judges=_make_ensemble_judges(has_xgb),
             )
         )
+        methods.append(
+            RandomForestEnsembleMethod(
+                judges=_make_ensemble_judges(has_xgb),
+            )
+        )
+        methods.append(_make_weighted_ensemble_without_pca(has_xgb))
+        methods.append(_make_random_forest_ensemble_without_pca(has_xgb))
 
     # ============================================================
     # Ablation suite
@@ -260,6 +286,7 @@ __all__ = [
     "LDAMethod",
     "WhitenedCosineMethod",
     "WeightedEnsembleMethod",
+    "RandomForestEnsembleMethod",
     "TinyMLPMethod",
     "AndBoxHCMethod",
     "HadamardCosineMethod",
