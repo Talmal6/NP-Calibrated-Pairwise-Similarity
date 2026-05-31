@@ -160,7 +160,7 @@ def task_to_cli_args(task: BenchmarkTask) -> list[str]:
         "--n_eval",
         str(task.n_eval),
         "--run_name",
-        task.output_dir.name,
+        str(task.output_dir),
     ]
     if task.hadamard:
         args.append("--hadamard_preprocess")
@@ -174,7 +174,7 @@ def task_to_command_line(python_bin: str, task: BenchmarkTask) -> str:
     complete = shlex.quote(str(task.output_dir / "_COMPLETE"))
     cli = [python_bin, "-m", CLI_MODULE, *task_to_cli_args(task)]
     cli_text = " ".join(shlex.quote(str(part)) for part in cli)
-    return f"set -e ; mkdir -p {out_dir} ; {cli_text} > {run_log} 2>&1 && touch {complete}"
+    return f"set -e ; mkdir -p {out_dir} ; rm -f {complete} ; {cli_text} > {run_log} 2>&1 && touch {complete}"
 
 
 def is_complete(task: BenchmarkTask) -> bool:

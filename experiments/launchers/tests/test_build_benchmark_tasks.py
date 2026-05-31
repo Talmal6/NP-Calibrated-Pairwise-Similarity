@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import csv
 import shlex
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -11,6 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from experiments.launchers import benchmark_registry as registry
+from experiments.launchers import submit_benchmark_array as submitter
 from experiments.launchers.build_benchmark_tasks import (
     BenchmarkTask,
     build_main_suite,
@@ -112,6 +115,8 @@ def test_task_to_command_line_quotes_paths(tmp_path: Path) -> None:
     assert str(task.output_dir) in parts
     assert str(task.output_dir / "run.log") in parts
     assert str(task.output_dir / "_COMPLETE") in parts
+    idx = parts.index("--run_name")
+    assert parts[idx + 1] == str(task.output_dir)
 
 
 def test_is_complete_roundtrip(tmp_path: Path) -> None:
@@ -125,3 +130,36 @@ def test_extra_cli_args_passthrough(tmp_path: Path) -> None:
     task = _task(tmp_path, ("--enable_online_stopping", "--alpha", "0.02"))
     args = task_to_cli_args(task)
     assert args[-3:] == ["--enable_online_stopping", "--alpha", "0.02"]
+
+
+def test_aggregate_tables_use_seed_outputs(tmp_path: Path) -> None:
+    task0 = _task(tmp_path / "seed0")
+    task1 = replace(_task(tmp_path / "seed1"), task_id=2, seed=1)
+    for task, micro_tpr, micro_fpr in ((task0, 0.50, 0.04), (task1, 0.70, 0.06)):
+        task.output_dir.mkdir(parents=True)
+        (task.output_dir / "_COMPLETE").touch()
+        (task.output_dir / "trial_summary.csv").write_text(
+            "\n".join(
+                [
+                    "trial,seed,method,micro_tpr,micro_fpr,macro_tpr,macro_fpr,train_samples_needed,time_ms",
+                    f"0,{task.seed},Cosine,{micro_tpr},{micro_fpr},{micro_tpr},{micro_fpr},200,10",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+    result = submitter._write_aggregate_tables(tmp_path / "exp", [task0, task1])
+    assert result["trial_rows"] == 2
+    assert result["aggregate_rows"] == 1
+
+    table_path = tmp_path / "exp" / "final_tables" / "wildchat_final.csv"
+    with table_path.open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+
+    assert len(rows) == 1
+    assert rows[0]["method"] == "Cosine"
+    assert rows[0]["n"] == "2"
+    assert float(rows[0]["micro_tpr_mean"]) == pytest.approx(0.60)
+    assert float(rows[0]["micro_fpr_mean"]) == pytest.approx(0.05)
+    assert (tmp_path / "exp" / "final_tables" / "wildchat_final.md").exists()
