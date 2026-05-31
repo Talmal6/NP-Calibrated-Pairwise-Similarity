@@ -12,6 +12,7 @@ from .logistic_regression import LogisticRegressionMethod
 from .lda import LDAMethod
 from .tiny_mlp import TinyMLPMethod
 from .andbox import AndBoxHCMethod
+from .separation import ProjectedSeparationScoreMethod, SeparationScoreMethod
 
 # Main method
 from .whitened_cosine import WhitenedCosineMethod
@@ -25,10 +26,10 @@ from .fisher_hadamard_methods import HadamardCosineMethod
 
 # Ablations
 from .abl import (
+    AblationMode,
+    CANONICAL_ABLATIONS,
     available_ablations,
     make_ablation_methods,
-    CANONICAL_ABLATIONS,
-    AblationMode,
 )
 
 
@@ -41,10 +42,7 @@ def _has_xgb() -> bool:
 
 
 def _optional_class(module_name: str, class_name: str) -> Optional[Type[OnlineBaseMethod]]:
-    """
-    Import an optional method class without breaking the package if the file
-    or dependency is unavailable.
-    """
+    """Import an optional method class without breaking the package."""
     try:
         module = importlib.import_module(f"{__package__}.{module_name}")
         cls = getattr(module, class_name)
@@ -54,40 +52,18 @@ def _optional_class(module_name: str, class_name: str) -> Optional[Type[OnlineBa
 
 
 def _dedupe_by_name(methods: list[OnlineBaseMethod]) -> list[OnlineBaseMethod]:
-    """
-    Keep the first method with each name.
-
-    This prevents accidental duplicate entries when a method is imported through
-    both the stable and optional paths.
-    """
     seen: set[str] = set()
     out: list[OnlineBaseMethod] = []
-
     for method in methods:
         name = getattr(method, "name", method.__class__.__name__)
-
         if name in seen:
             continue
-
         seen.add(name)
         out.append(method)
-
     return out
 
 
 def _make_main_whitened_method() -> OnlineBaseMethod:
-    """
-    Main method.
-
-    This should match the winning ablation:
-
-        ablation:pca_whitened_hadamard_linear
-
-    Expected scoring route under --hadamard_preprocess:
-
-        X = emb(query) * emb(anchor)
-        score(X) = X @ w + b
-    """
     return WhitenedCosineMethod(
         name="WhitenedCosine",
         eps=1e-6,
@@ -143,13 +119,6 @@ def _make_random_forest_ensemble_without_pca(has_xgb: bool) -> RandomForestEnsem
 
 
 def _make_ablation_suite() -> list[OnlineBaseMethod]:
-    """
-    Default ablations for the current --hadamard_preprocess evaluation path.
-
-    raw_cosine and current_whitened_cosine are intentionally excluded here
-    because the current benchmark route gives precomputed Hadamard features,
-    not raw embedding pairs. They remain available through make_ablation_methods.
-    """
     methods = make_ablation_methods(
         ablations=(
             "raw_hadamard_linear",
@@ -168,7 +137,6 @@ def _make_ablation_suite() -> list[OnlineBaseMethod]:
         rank_mode="explained_variance",
         explained_variance=0.99,
     )
-
     return list(methods.values())
 
 
@@ -179,97 +147,46 @@ def get_default_methods(
     include_optional: bool = True,
     include_ensemble: bool = True,
 ) -> list[OnlineBaseMethod]:
-    """
-    Return the default benchmark method list.
-
-    The main method is WhitenedCosine, which should now be the production name
-    for the pooled PCA-whitened Hadamard linear scorer.
-
-    To run only core methods:
-
-        get_default_methods(include_ablations=False)
-
-    To run the full analysis suite:
-
-        get_default_methods(include_ablations=True)
-    """
+    """Return the default benchmark method list."""
     if has_xgb is None:
         has_xgb = _has_xgb()
 
-    methods: list[OnlineBaseMethod] = []
+    methods: list[OnlineBaseMethod] = [
+        CosineMethod(),
+        AndBoxHCMethod(),
+        HadamardCosineMethod(),
+        _make_main_whitened_method(),
+    ]
 
-    # ============================================================
-    # Minimal geometric baselines
-    # ============================================================
-    methods.extend(
-        [
-            CosineMethod(),
-            AndBoxHCMethod(),
-            HadamardCosineMethod(),
-        ]
-    )
-
-    # ============================================================
-    # Main proposed method
-    # ============================================================
-    methods.append(_make_main_whitened_method())
-
-    # ============================================================
-    # Optional strong related methods
-    # ============================================================
     if include_optional:
-        MahalanobisDeltaMethod = _optional_class(
-            "mahalanobis_delta",
-            "MahalanobisDeltaMethod",
-        )
+        MahalanobisDeltaMethod = _optional_class("mahalanobis_delta", "MahalanobisDeltaMethod")
         if MahalanobisDeltaMethod is not None:
             methods.append(MahalanobisDeltaMethod())
-
-        MultiPrototypeCosineMethod = _optional_class(
-            "multiprototype_cosine",
-            "MultiPrototypeCosineMethod",
-        )
+        MultiPrototypeCosineMethod = _optional_class("multiprototype_cosine", "MultiPrototypeCosineMethod")
         if MultiPrototypeCosineMethod is not None:
             methods.append(MultiPrototypeCosineMethod(k=4))
+        methods.extend(
+            [
+                SeparationScoreMethod(exact=False),
+                SeparationScoreMethod(exact=True),
+                ProjectedSeparationScoreMethod(projection="lda", exact=False),
+                ProjectedSeparationScoreMethod(projection="lda", exact=True),
+                ProjectedSeparationScoreMethod(projection="pca_whiten", exact=False, dim=64),
+                ProjectedSeparationScoreMethod(projection="pca_whiten", exact=True, dim=64),
+            ]
+        )
 
-    # ============================================================
-    # Linear / neural baselines
-    # ============================================================
-    methods.extend(
-        [
-            VectorWeightedMethod(),
-            LogisticRegressionMethod(),
-            LDAMethod(),
-            TinyMLPMethod(),
-        ]
-    )
+    methods.extend([VectorWeightedMethod(), LogisticRegressionMethod(), LDAMethod(), TinyMLPMethod()])
 
-    # ============================================================
-    # Weighted ensemble
-    # ============================================================
     if include_ensemble:
-        methods.append(
-            WeightedEnsembleMethod(
-                judges=_make_ensemble_judges(has_xgb),
-            )
-        )
-        methods.append(
-            RandomForestEnsembleMethod(
-                judges=_make_ensemble_judges(has_xgb),
-            )
-        )
+        methods.append(WeightedEnsembleMethod(judges=_make_ensemble_judges(has_xgb)))
+        methods.append(RandomForestEnsembleMethod(judges=_make_ensemble_judges(has_xgb)))
         methods.append(_make_weighted_ensemble_without_pca(has_xgb))
         methods.append(_make_random_forest_ensemble_without_pca(has_xgb))
 
-    # ============================================================
-    # Ablation suite
-    # ============================================================
     if include_ablations:
         methods.extend(_make_ablation_suite())
 
-    # ============================================================
-    # XGBoost baseline
-    # ============================================================
     if has_xgb:
         XGBoostLightMethod = _optional_class("xgboost", "XGBoostLightMethod")
         if XGBoostLightMethod is not None:
@@ -290,6 +207,8 @@ __all__ = [
     "TinyMLPMethod",
     "AndBoxHCMethod",
     "HadamardCosineMethod",
+    "SeparationScoreMethod",
+    "ProjectedSeparationScoreMethod",
     "available_ablations",
     "make_ablation_methods",
     "CANONICAL_ABLATIONS",
