@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Legacy launcher. Prefer `python -m experiments.launchers.submit_benchmark_array`.
 set -euo pipefail
 
 # ============================================================

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """
+DEPRECATED. Use `python -m experiments.launchers.submit_benchmark_array` instead.
+Kept for reference; will be removed once the new launcher is validated.
+
 run_paper_experiments_normal.py
 
 Compact Slurm launcher for the FIRST paper experiment run.
