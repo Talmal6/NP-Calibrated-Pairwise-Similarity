@@ -81,6 +81,47 @@ def test_main_suite_cardinality(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert len({task.output_dir for task in tasks}) == 12
 
 
+def test_seed_tasks_group_into_config_jobs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo_root = _touch_inputs(tmp_path, monkeypatch)
+    tasks = build_main_suite(
+        tmp_path / "exp",
+        ["wildchat_final", "lmsys_cluster"],
+        ["default"],
+        list(range(10)),
+        [0.01, 0.03, 0.05],
+        1,
+        200,
+        200,
+        200,
+        repo_root,
+    )
+
+    jobs = submitter._group_tasks_into_jobs(tasks, tmp_path / "exp")
+
+    assert len(tasks) == 60
+    assert len(jobs) == 6
+    assert [len(job.tasks) for job in jobs] == [10] * 6
+    assert [task.seed for task in jobs[0].tasks] == list(range(10))
+    assert [(job.tasks[0].dataset, job.tasks[0].alpha) for job in jobs] == [
+        ("wildchat_final", 0.01),
+        ("wildchat_final", 0.03),
+        ("wildchat_final", 0.05),
+        ("lmsys_cluster", 0.01),
+        ("lmsys_cluster", 0.03),
+        ("lmsys_cluster", 0.05),
+    ]
+
+
+def test_vcache_dataset_preset_enables_vcache_competitor() -> None:
+    args = submitter.parse_args(["--datasets", "wildchat_final", "--include-vcache-original-datasets"])
+
+    submitter._apply_dataset_presets(args)
+    submitter._apply_competitor_presets(args)
+
+    assert "vcache_lmarena" in args.datasets
+    assert "--include_vcache_baseline" in args.extra_cli_arg
+
+
 def test_missing_npz_raises_with_full_list(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         registry,
@@ -106,6 +147,31 @@ def test_missing_npz_raises_with_full_list(tmp_path: Path, monkeypatch: pytest.M
     message = str(exc_info.value)
     assert "missing_wildchat.npz" in message
     assert "missing_lmsys.npz" in message
+
+
+def test_can_plan_without_existing_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        registry,
+        "NPZ_PATHS",
+        {
+            ("wildchat_final", "default"): tmp_path / "missing_wildchat.npz",
+        },
+    )
+    tasks = build_main_suite(
+        tmp_path / "exp",
+        ["wildchat_final"],
+        ["default"],
+        [0],
+        [0.05],
+        1,
+        200,
+        200,
+        200,
+        tmp_path,
+        validate_inputs=False,
+    )
+    assert len(tasks) == 1
+    assert tasks[0].npz_path == (tmp_path / "missing_wildchat.npz").resolve()
 
 
 def test_task_to_command_line_quotes_paths(tmp_path: Path) -> None:

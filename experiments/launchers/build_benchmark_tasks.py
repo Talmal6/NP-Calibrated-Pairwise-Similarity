@@ -85,6 +85,7 @@ def build_main_suite(
     hadamard: bool | None = None,
     extra_cli_args: Sequence[str] = (),
     group: str = "main",
+    validate_inputs: bool = True,
 ) -> list[BenchmarkTask]:
     if tau_mode not in VALID_TAU_MODES:
         raise ValueError(f"Unknown tau_mode {tau_mode!r}; expected one of {sorted(VALID_TAU_MODES)}")
@@ -94,8 +95,9 @@ def build_main_suite(
     resolved: dict[tuple[str, str], Path] = {}
     for dataset, embedder in itertools.product(datasets, embedders):
         try:
-            registry.validate_combination(dataset, embedder, root)
             resolved[(dataset, embedder)] = registry.resolve_npz(dataset, embedder, root)
+            if validate_inputs:
+                registry.validate_combination(dataset, embedder, root)
         except (FileNotFoundError, KeyError) as exc:
             missing.append(_combination_error(dataset, embedder, exc))
 

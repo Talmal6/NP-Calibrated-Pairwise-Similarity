@@ -14,6 +14,7 @@ import subprocess
 import sys
 import time
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -71,6 +72,26 @@ T_CRITICAL_975 = {
     30: 2.042,
 }
 
+
+STREAMING_DEFAULT_DATASETS = [
+    "SemCacheLMArena", "SemCacheClassification", "SemCacheSearchQueries", "SemCacheCombo",
+]
+STREAMING_DEFAULT_METHODS = [
+    "vcache", "cosine", "ours_whitened_hadamard", "ours_weighted_ensemble", "vcache_whitened_cosine",
+]
+STREAMING_DEFAULT_DELTA_VALUES = [0.01, 0.02, 0.03, 0.05, 0.08]
+STREAMING_DEFAULT_THRESHOLDS = [0.8, 0.85, 0.9, 0.93, 0.95, 0.97, 0.98, 0.99, 0.995, 0.999]
+STREAMING_DEFAULT_TARGET_BUDGETS = [0.01, 0.02, 0.03, 0.05, 0.08]
+STREAMING_DEFAULT_HARD_THRESHOLDS = [0.80, 0.85, 0.90]
+
+
+@dataclass(frozen=True)
+class BenchmarkJob:
+    job_id: int
+    tasks: tuple[BenchmarkTask, ...]
+    output_dir: Path
+
+
 def _timestamp() -> str:
     return dt.datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -96,6 +117,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     add = parser.add_argument
     add("--datasets", nargs="+", default=["wildchat_final", "lmsys_cluster"], help="Dataset registry keys.")
+    add(
+        "--include-vcache-original-datasets",
+        action="store_true",
+        help="Also include the official vCache SemBenchmark datasets registered by this launcher.",
+    )
     add("--embedders", nargs="+", default=["default"], help="Embedder registry keys.")
     add("--seeds", nargs="+", type=int, default=list(range(20)), help="Seed values.")
     add("--alphas", nargs="+", type=float, default=[0.01, 0.03, 0.05, 0.10], help="Alpha values.")
@@ -104,8 +130,19 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     add("--n-calib", type=int, default=1200, help="Number of calibration examples.")
     add("--n-eval", type=int, default=1200, help="Number of evaluation examples.")
     add("--n-trials", type=int, default=1, help="Repetitions per seed.")
-    add("--hadamard", dest="hadamard", action="store_true", default=True, help="Enable Hadamard preprocessing.")
-    add("--no-hadamard", dest="hadamard", action="store_false", help="Disable Hadamard preprocessing.")
+    add(
+        "--hadamard",
+        dest="hadamard",
+        action="store_true",
+        default=None,
+        help="Force Hadamard preprocessing for all datasets instead of using registry defaults.",
+    )
+    add(
+        "--no-hadamard",
+        dest="hadamard",
+        action="store_false",
+        help="Disable Hadamard preprocessing for all datasets.",
+    )
     add("--extra-cli-arg", action="append", default=[], help="Extra single argument passed to the benchmark CLI.")
     add("--exp-root", default=str(Path("NeighborCache/results") / f"benchmark_{_timestamp()}"), help="Experiment output root.")
     add("--conda-env", default=os.environ.get("CONDA_ENV_NAME", "ec"), help="Conda environment name.")
@@ -117,7 +154,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     add("--gpus", default="0", help="SLURM GPU request, such as rtx_4090:1 or 1.")
     add("--account", default="", help="SLURM account.")
     add("--qos", default="", help="SLURM QoS.")
-    add("--max-parallel", type=int, default=8, help="Maximum simultaneous array tasks.")
+    add(
+        "--max-parallel",
+        type=int,
+        default=0,
+        help="Maximum simultaneous array jobs; 0 leaves concurrency uncapped by this launcher.",
+    )
     add("--job-name", default="ncache_bench", help="SLURM job name.")
     add("--dry-run", action="store_true", help="Print the matrix and sample command without writing files.")
     add("--submit", action="store_true", help="Submit with sbatch after writing files.")
@@ -130,6 +172,33 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     add("--only-failed", type=Path, default=None, help="failed.tsv path used to retry matching rows.")
     add("--filter", default="", help="Comma-separated key=value task filter.")
     add("--suite", choices=["smoke", "paper"], default="paper", help="Benchmark suite preset.")
+    # --- streaming evaluation (auto-enabled by --include-vcache-original-datasets) ---
+    add("--streaming", dest="streaming", action="store_true", default=None,
+        help="Submit a streaming evaluation job alongside the benchmark array.")
+    add("--no-streaming", dest="streaming", action="store_false",
+        help="Disable the streaming evaluation job.")
+    add("--vcache-repo-path", default="../vCache",
+        help="Path to the vCache source repo used by the streaming evaluation.")
+    add("--streaming-datasets", nargs="+", default=STREAMING_DEFAULT_DATASETS,
+        help="Datasets for the streaming evaluation.")
+    add("--streaming-methods", nargs="+", default=STREAMING_DEFAULT_METHODS,
+        help="Methods for the streaming evaluation.")
+    add("--streaming-seed", type=int, default=0, help="Random seed for the streaming evaluation.")
+    add("--streaming-cache-size", type=int, default=4096, help="Cache size for the streaming evaluation.")
+    add("--streaming-raw-log-mode", choices=["full", "minimal", "none"], default="minimal",
+        help="Raw decision log verbosity for the streaming evaluation.")
+    add("--streaming-delta-values", nargs="+", type=float, default=STREAMING_DEFAULT_DELTA_VALUES,
+        help="vCache delta values swept in the streaming evaluation.")
+    add("--streaming-thresholds", nargs="+", type=float, default=STREAMING_DEFAULT_THRESHOLDS,
+        help="Cosine thresholds swept in the streaming evaluation.")
+    add("--streaming-target-budgets", nargs="+", type=float, default=STREAMING_DEFAULT_TARGET_BUDGETS,
+        help="Target FPR budgets (alpha) for learned methods in the streaming evaluation.")
+    add("--streaming-hard-thresholds", nargs="+", type=float, default=STREAMING_DEFAULT_HARD_THRESHOLDS,
+        help="Hard-neighbor cosine thresholds for sub-stream analysis.")
+    add("--streaming-time", default=None,
+        help="SLURM time limit for the streaming job; defaults to --time.")
+    add("--streaming-limit", type=int, default=None,
+        help="Debug: max examples per dataset in the streaming evaluation (omit for full stream).")
     return parser.parse_args(_rewrite_extra_cli_args(argv))
 
 
@@ -179,6 +248,37 @@ def _apply_suite(args: argparse.Namespace) -> None:
         args.seeds, args.alphas = [0], [0.05]
         args.n_trials = 1
         args.n_train = args.n_calib = args.n_eval = 200
+        if args.streaming is None:
+            args.streaming = False
+
+
+def _apply_dataset_presets(args: argparse.Namespace) -> None:
+    if not getattr(args, "include_vcache_original_datasets", False):
+        if args.streaming is None:
+            args.streaming = False
+        return
+    seen = set()
+    datasets = []
+    for dataset in [*args.datasets, *registry.VCACHE_ORIGINAL_DATASETS]:
+        if dataset in seen:
+            continue
+        seen.add(dataset)
+        datasets.append(dataset)
+    args.datasets = datasets
+    if args.streaming is None:
+        args.streaming = True
+
+
+def _append_extra_cli_arg_once(args: argparse.Namespace, flag: str) -> None:
+    current = [str(arg) for arg in getattr(args, "extra_cli_arg", [])]
+    if flag not in current:
+        current.append(flag)
+    args.extra_cli_arg = current
+
+
+def _apply_competitor_presets(args: argparse.Namespace) -> None:
+    if any(dataset in registry.VCACHE_ORIGINAL_DATASETS for dataset in args.datasets):
+        _append_extra_cli_arg_once(args, "--include_vcache_baseline")
 
 
 def _filter_tasks(tasks: list[BenchmarkTask], filter_text: str) -> list[BenchmarkTask]:
@@ -197,16 +297,34 @@ def _task_key(task: BenchmarkTask) -> tuple[str, str, int, float, str]:
     return (task.dataset, task.embedder, int(task.seed), float(task.alpha), task.tau_mode)
 
 
-def _failed_keys(path: Path) -> set[tuple[str, str, int, float, str]]:
+def _task_config_key(task: BenchmarkTask) -> tuple[str, str, float, str, str]:
+    return (task.dataset, task.embedder, float(task.alpha), task.tau_mode, task.group)
+
+
+def _failed_selections(
+    path: Path,
+) -> tuple[set[tuple[str, str, int, float, str]], set[tuple[str, str, float, str, str]]]:
     with path.open("r", encoding="utf-8", newline="") as handle:
         rows = csv.DictReader(handle, delimiter="\t")
-        out = set()
+        task_keys: set[tuple[str, str, int, float, str]] = set()
+        config_keys: set[tuple[str, str, float, str, str]] = set()
         for row in rows:
             try:
-                out.add((row["dataset"], row["embedder"], int(row["seed"]), float(row["alpha"]), row["tau_mode"]))
+                dataset = row["dataset"]
+                embedder = row["embedder"]
+                alpha = float(row["alpha"])
+                tau_mode = row["tau_mode"]
+                group = row.get("group", "main") or "main"
             except (KeyError, TypeError, ValueError):
                 continue
-        return out
+            seed_text = str(row.get("seed", "")).strip()
+            try:
+                seed = int(seed_text)
+            except (TypeError, ValueError):
+                config_keys.add((dataset, embedder, alpha, tau_mode, group))
+                continue
+            task_keys.add((dataset, embedder, seed, alpha, tau_mode))
+        return task_keys, config_keys
 
 
 def _result_csv(task: BenchmarkTask) -> Path:
@@ -231,6 +349,98 @@ def _row(task: BenchmarkTask, command: str | None = None) -> dict[str, Any]:
     return row
 
 
+def _job_group_key(task: BenchmarkTask) -> tuple[Any, ...]:
+    return (
+        task.dataset,
+        task.embedder,
+        float(task.alpha),
+        task.tau_mode,
+        task.group,
+        task.n_train,
+        task.n_calib,
+        task.n_eval,
+        bool(task.hadamard),
+        task.n_trials,
+        task.extra_cli_args,
+        str(task.npz_path),
+    )
+
+
+def _group_tasks_into_jobs(tasks: Sequence[BenchmarkTask], exp_root: Path) -> list[BenchmarkJob]:
+    grouped: dict[tuple[Any, ...], list[BenchmarkTask]] = {}
+    for task in tasks:
+        grouped.setdefault(_job_group_key(task), []).append(task)
+
+    jobs: list[BenchmarkJob] = []
+    for job_id, group_tasks in enumerate(grouped.values(), start=1):
+        ordered = tuple(sorted(group_tasks, key=lambda task: int(task.seed)))
+        jobs.append(
+            BenchmarkJob(
+                job_id=job_id,
+                tasks=ordered,
+                output_dir=Path(exp_root) / "jobs" / f"job_{job_id:06d}",
+            )
+        )
+    return jobs
+
+
+def _job_seed_text(job: BenchmarkJob) -> str:
+    return ",".join(str(task.seed) for task in job.tasks)
+
+
+def _job_task_id_text(job: BenchmarkJob) -> str:
+    return ",".join(str(task.task_id) for task in job.tasks)
+
+
+def _job_row(job: BenchmarkJob, command: str | None = None) -> dict[str, Any]:
+    first = job.tasks[0]
+    row = _row(first, command=command)
+    row["task_id"] = job.job_id
+    row["seed"] = _job_seed_text(job)
+    row["output_dir"] = str(job.output_dir)
+    return row
+
+
+def _write_job_script(job: BenchmarkJob, python_bin: str) -> Path:
+    job.output_dir.mkdir(parents=True, exist_ok=True)
+    script = job.output_dir / "job.sh"
+    first = job.tasks[0]
+    lines = [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        "",
+        "echo " + shlex.quote(
+            "Running "
+            f"job_id={job.job_id} dataset={first.dataset} embedder={first.embedder} "
+            f"alpha={first.alpha:.4g} tau_mode={first.tau_mode} seeds={_job_seed_text(job)}"
+        ),
+        "",
+    ]
+    for task in job.tasks:
+        lines.append("echo " + shlex.quote(f"Starting seed={task.seed} task_id={task.task_id}"))
+        lines.append("bash -lc " + shlex.quote(task_to_command_line(python_bin, task)))
+        lines.append("echo " + shlex.quote(f"Finished seed={task.seed} task_id={task.task_id}"))
+        lines.append("")
+    script.write_text("\n".join(lines), encoding="utf-8")
+    script.chmod(0o755)
+    return script
+
+
+def _job_command_line(script: Path) -> str:
+    return "bash " + shlex.quote(str(script))
+
+
+def _job_preview(job: BenchmarkJob, python_bin: str, *, limit: int = 2) -> str:
+    lines = [
+        f"# job_id={job.job_id} seeds={_job_seed_text(job)} seed_count={len(job.tasks)}",
+    ]
+    for task in job.tasks[:limit]:
+        lines.append(task_to_command_line(python_bin, task))
+    if len(job.tasks) > limit:
+        lines.append(f"# ... {len(job.tasks) - limit} more seed command(s) in this job")
+    return "\n".join(lines)
+
+
 def _jsonable(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
@@ -244,22 +454,47 @@ def _jsonable(value: Any) -> Any:
 def _write_files(
     exp_root: Path,
     tasks: list[BenchmarkTask],
+    jobs: list[BenchmarkJob],
     python_bin: str,
     args: argparse.Namespace,
     counts: dict[str, int],
 ) -> tuple[Path, Path, Path]:
     (exp_root / "slurm").mkdir(parents=True, exist_ok=True)
     (exp_root / "task_logs").mkdir(parents=True, exist_ok=True)
+    (exp_root / "jobs").mkdir(parents=True, exist_ok=True)
     git_sha = _best_stdout(["git", "rev-parse", "HEAD"], REPO_ROOT)
     py_version = _best_stdout([python_bin, "-c", "import sys; print(sys.version.replace('\\n', ' '))"])
     commands_file, commands_tsv, failed_tsv = exp_root / "commands.txt", exp_root / "commands.tsv", exp_root / "failed.tsv"
+    tasks_tsv = exp_root / "tasks.tsv"
     with commands_file.open("w", encoding="utf-8") as cmd_f, commands_tsv.open("w", encoding="utf-8", newline="") as tsv_f:
+        writer = csv.DictWriter(tsv_f, fieldnames=[*HEADERS, "command"], delimiter="\t")
+        writer.writeheader()
+        for job in jobs:
+            script = _write_job_script(job, python_bin)
+            command = _job_command_line(script)
+            cmd_f.write(command + "\n")
+            writer.writerow(_job_row(job, command))
+
+            job_config = {
+                "job": _job_row(job),
+                "task_ids": _job_task_id_text(job),
+                "seeds": [int(task.seed) for task in job.tasks],
+                "git_sha": git_sha,
+                "python_bin": python_bin,
+                "python_version": py_version,
+                "script": str(script),
+            }
+            (job.output_dir / "job_config.json").write_text(
+                json.dumps(_jsonable(job_config), indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+    with tasks_tsv.open("w", encoding="utf-8", newline="") as tsv_f:
         writer = csv.DictWriter(tsv_f, fieldnames=[*HEADERS, "command"], delimiter="\t")
         writer.writeheader()
         for task in tasks:
             task.output_dir.mkdir(parents=True, exist_ok=True)
             command = task_to_command_line(python_bin, task)
-            cmd_f.write(command + "\n")
             writer.writerow(_row(task, command))
             config = {
                 "task": _row(task), "git_sha": git_sha, "python_bin": python_bin,
@@ -270,17 +505,26 @@ def _write_files(
     manifest = {
         "launcher_args": _jsonable(vars(args)), "git_sha": git_sha,
         "timestamp": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
-        "total_remaining": len(tasks), **counts,
+        "total_remaining_seed_tasks": len(tasks),
+        "total_remaining_jobs": len(jobs),
+        "tasks_tsv": str(tasks_tsv),
+        **counts,
     }
     (exp_root / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return commands_file, commands_tsv, failed_tsv
 
 
-def _print_table(tasks: list[BenchmarkTask]) -> None:
-    print(f"Remaining tasks: {len(tasks)}")
-    print("task_id\tdataset\tembedder\tseed\talpha\ttau_mode\toutput_dir")
-    for task in tasks:
-        print(f"{task.task_id}\t{task.dataset}\t{task.embedder}\t{task.seed}\t{task.alpha:.4g}\t{task.tau_mode}\t{task.output_dir}")
+def _print_job_table(jobs: list[BenchmarkJob]) -> None:
+    seed_tasks = sum(len(job.tasks) for job in jobs)
+    print(f"Remaining seed tasks: {seed_tasks}")
+    print(f"Remaining array jobs: {len(jobs)}")
+    print("job_id\tdataset\tembedder\tseed_count\tseeds\talpha\ttau_mode\tjob_dir")
+    for job in jobs:
+        first = job.tasks[0]
+        print(
+            f"{job.job_id}\t{first.dataset}\t{first.embedder}\t{len(job.tasks)}\t"
+            f"{_job_seed_text(job)}\t{first.alpha:.4g}\t{first.tau_mode}\t{job.output_dir}"
+        )
 
 
 def _task_label(task: BenchmarkTask) -> str:
@@ -665,8 +909,11 @@ def _env_setup(conda_env: str) -> str:
 
 
 def _sbatch_command(exp_root: Path, commands_file: Path, commands_tsv: Path, failed_tsv: Path, n_tasks: int, args: argparse.Namespace) -> list[str]:
+    array_spec = f"1-{n_tasks}"
+    if int(args.max_parallel) > 0:
+        array_spec += f"%{int(args.max_parallel)}"
     cmd = [
-        "sbatch", f"--job-name={args.job_name}", f"--array=1-{n_tasks}%{args.max_parallel}",
+        "sbatch", f"--job-name={args.job_name}", f"--array={array_spec}",
         f"--time={args.time}", f"--cpus-per-task={args.cpus_per_task}", f"--mem={args.mem}",
         f"--output={exp_root}/slurm/%x_%A_%a.out", f"--error={exp_root}/slurm/%x_%A_%a.err",
         "--export="
@@ -770,51 +1017,148 @@ def _finalize_results(
     return 0
 
 
+def _build_streaming_cli(python_bin: str, args: argparse.Namespace, output_dir: Path) -> str:
+    parts: list[str] = [
+        python_bin, "-m", "experiments.compare_vcache_real_datasets",
+        "--datasets", *args.streaming_datasets,
+        "--methods", *args.streaming_methods,
+        "--embedding_model", "GTE",
+        "--seed", str(args.streaming_seed),
+        "--cache_size", str(args.streaming_cache_size),
+        "--eviction_policy", "mru",
+        "--delta_values", *[str(v) for v in args.streaming_delta_values],
+        "--thresholds", *[str(v) for v in args.streaming_thresholds],
+        "--target_budgets", *[str(v) for v in args.streaming_target_budgets],
+        "--hard_neighbor_thresholds", *[str(v) for v in args.streaming_hard_thresholds],
+        "--allow_pairwise_from_stream_annotations",
+        "--vcache_repo_path", str(args.vcache_repo_path),
+        "--raw_log_mode", args.streaming_raw_log_mode,
+        "--output_dir", str(output_dir),
+    ]
+    if args.streaming_limit is not None:
+        parts += ["--limit", str(args.streaming_limit)]
+    return " ".join(shlex.quote(str(p)) for p in parts)
+
+
+def _write_streaming_script(exp_root: Path, python_bin: str, args: argparse.Namespace) -> Path:
+    script_dir = exp_root / "streaming_job"
+    script_dir.mkdir(parents=True, exist_ok=True)
+    cmd = _build_streaming_cli(python_bin, args, exp_root / "streaming")
+    script = script_dir / "streaming.sh"
+    lines = [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        "",
+        "echo 'Starting vcache streaming evaluation'",
+        "",
+        cmd,
+        "",
+        "echo 'Streaming evaluation complete'",
+    ]
+    script.write_text("\n".join(lines), encoding="utf-8")
+    script.chmod(0o755)
+    return script
+
+
+def _sbatch_streaming_command(exp_root: Path, script: Path, args: argparse.Namespace) -> list[str]:
+    time_limit = getattr(args, "streaming_time", None) or args.time
+    cmd = [
+        "sbatch",
+        f"--job-name={args.job_name}_stream",
+        f"--time={time_limit}",
+        f"--cpus-per-task={args.cpus_per_task}",
+        f"--mem={args.mem}",
+        f"--output={exp_root}/slurm/%x_%j.out",
+        f"--error={exp_root}/slurm/%x_%j.err",
+    ]
+    for attr, opt in (("partition", "partition"), ("account", "account"), ("qos", "qos")):
+        value = getattr(args, attr, "")
+        if value:
+            cmd.append(f"--{opt}={value}")
+    if getattr(args, "gpus", "0") != "0":
+        cmd.append(f"--gres=gpu:{args.gpus}")
+    cmd.append(str(script))
+    return cmd
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     _apply_suite(args)
+    _apply_dataset_presets(args)
+    _apply_competitor_presets(args)
+    if args.streaming is None:
+        args.streaming = False
     python_bin = _resolve_python(args.conda_env, args.python_bin)
     exp_root = _abs_path(args.exp_root)
-    _download_inputs(args.datasets, args.embedders, python_bin)
+    if not args.dry_run:
+        _download_inputs(args.datasets, args.embedders, python_bin)
     all_tasks = build_main_suite(
         exp_root, args.datasets, args.embedders, args.seeds, args.alphas,
         args.n_trials, args.n_train, args.n_calib, args.n_eval, REPO_ROOT,
         tau_mode=args.tau_mode, hadamard=args.hadamard, extra_cli_args=args.extra_cli_arg,
+        validate_inputs=not args.dry_run,
     )
     before = len(all_tasks)
     filtered = _filter_tasks(all_tasks, args.filter)
     if args.only_failed is not None:
-        wanted = _failed_keys(args.only_failed)
-        filtered = [task for task in filtered if _task_key(task) in wanted]
+        wanted_tasks, wanted_configs = _failed_selections(args.only_failed)
+        filtered = [
+            task
+            for task in filtered
+            if _task_key(task) in wanted_tasks or _task_config_key(task) in wanted_configs
+        ]
     after = len(filtered)
     remaining = filtered if args.force else [task for task in filtered if not _is_ready_for_aggregation(task)]
+    jobs = _group_tasks_into_jobs(remaining, exp_root)
     counts = {
         "total_tasks_before_filter": before,
         "total_tasks_after_filter": after,
         "total_skipped_complete": after - len(remaining),
+        "total_jobs_after_grouping": len(jobs),
     }
     if args.dry_run:
-        _print_table(remaining)
-        if remaining:
+        _print_job_table(jobs)
+        if jobs:
             print("\nSample command:")
-            print(task_to_command_line(python_bin, remaining[0]))
+            print(_job_preview(jobs[0], python_bin))
+        if args.streaming:
+            streaming_cmd = _build_streaming_cli(python_bin, args, exp_root / "streaming")
+            print("\nStreaming evaluation command:")
+            print(streaming_cmd)
         return 0
-    commands_file, commands_tsv, failed_tsv = _write_files(exp_root, remaining, python_bin, args, counts)
+    commands_file, commands_tsv, failed_tsv = _write_files(exp_root, remaining, jobs, python_bin, args, counts)
+    streaming_script: Path | None = None
+    streaming_sbatch: list[str] = []
+    if args.streaming:
+        streaming_script = _write_streaming_script(exp_root, python_bin, args)
+        streaming_sbatch = _sbatch_streaming_command(exp_root, streaming_script, args)
+        print("Streaming sbatch command:")
+        print(" ".join(shlex.quote(part) for part in streaming_sbatch))
     if not remaining:
         print("Nothing to do.")
+        if args.streaming and args.submit and streaming_script is not None:
+            streaming_job_id = _submit_sbatch(streaming_sbatch)
+            print(f"Submitted streaming SLURM job {streaming_job_id}.")
         return _finalize_results(exp_root, filtered, failed_tsv, args)
-    sbatch = _sbatch_command(exp_root, commands_file, commands_tsv, failed_tsv, len(remaining), args)
+    sbatch = _sbatch_command(exp_root, commands_file, commands_tsv, failed_tsv, len(jobs), args)
     print("Sbatch command:")
     print(" ".join(shlex.quote(part) for part in sbatch))
     if args.submit:
         job_id = _submit_sbatch(sbatch)
+        streaming_job_id: str | None = None
+        if args.streaming and streaming_script is not None:
+            streaming_job_id = _submit_sbatch(streaming_sbatch)
+            print(f"Submitted streaming SLURM job {streaming_job_id}.")
         if args.wait:
             _wait_for_slurm_job(job_id, poll_interval=args.poll_interval, timeout=args.wait_timeout)
             return _finalize_results(exp_root, filtered, failed_tsv, args)
-        print(
+        msg = (
             f"Submitted SLURM job {job_id}. Re-run with --exp-root {shlex.quote(str(exp_root))} "
             "after completion to aggregate, or omit --no-wait next time."
         )
+        if streaming_job_id:
+            msg += f" Streaming job: {streaming_job_id}."
+        print(msg)
     return 0
 
 

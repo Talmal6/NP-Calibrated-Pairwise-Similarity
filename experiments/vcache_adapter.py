@@ -13,7 +13,7 @@ import numpy as np
 
 from .dataset_stream import StreamExample
 from .equivalence import EquivalenceJudge
-from .online_policies import _base_record, _evaluate_decision
+from .online_policies import OursModel, _base_record, _evaluate_decision
 from .vcache_metrics import add_cumulative_fields
 
 
@@ -568,6 +568,86 @@ def _load_minimal_official_vcache(repo_path: Path, *, import_error: BaseExceptio
     return classes
 
 
+class _WhitenedCosineVectorDB:
+    """Drop-in replacement for _ExactVectorDB that scores entries via a pre-trained whitened-cosine model."""
+
+    def __init__(self, max_capacity: int, model: OursModel) -> None:
+        self.max_capacity = int(max_capacity)
+        self.model = model
+        self._raw: List[np.ndarray] = []
+        self._ids: List[int] = []
+        self._id_to_row: Dict[int, int] = {}
+        self._next_id = 0
+        self.last_knn: List[Tuple[float, int]] = []
+
+    def add(self, embedding: List[float]) -> int:
+        if len(self._ids) >= self.max_capacity:
+            raise RuntimeError(
+                "_WhitenedCosineVectorDB reached max_capacity before eviction ran; "
+                "increase --cache_size or use a lower eviction watermark."
+            )
+        arr = np.asarray(embedding, dtype=np.float32).reshape(-1)
+        embedding_id = self._next_id
+        self._next_id += 1
+        row = len(self._ids)
+        self._ids.append(embedding_id)
+        self._id_to_row[embedding_id] = row
+        self._raw.append(arr)
+        return embedding_id
+
+    def remove(self, embedding_id: int) -> int:
+        embedding_id = int(embedding_id)
+        row = self._id_to_row.pop(embedding_id, None)
+        if row is None:
+            return embedding_id
+        last_row = len(self._ids) - 1
+        last_id = self._ids[last_row]
+        if row != last_row:
+            self._raw[row] = self._raw[last_row]
+            self._ids[row] = last_id
+            self._id_to_row[last_id] = row
+        self._ids.pop()
+        self._raw.pop()
+        return int(embedding_id)
+
+    def get_knn(self, embedding: List[float], k: int) -> List[Tuple[float, int]]:
+        if not self._ids:
+            self.last_knn = []
+            return []
+        q = np.asarray(embedding, dtype=np.float32).reshape(-1)
+        cached = np.vstack(self._raw)  # (n, d)
+        feats = (cached * q[np.newaxis, :]).astype(np.float32)  # Hadamard products (n, d)
+        if self.model.uses_alt_score:
+            q_norm = q / max(float(np.linalg.norm(q)), 1e-12)
+            norms = np.maximum(np.linalg.norm(cached, axis=1, keepdims=True), 1e-12)
+            cosines = (cached / norms @ q_norm).reshape(-1, 1).astype(np.float32)
+            scores_arr = self.model.method.score(feats, X_alt=cosines)
+        else:
+            scores_arr = self.model.method.score(feats)
+        scores = np.asarray(scores_arr).reshape(-1)
+        k_actual = min(int(k), len(self._ids))
+        order = np.argsort(-scores)[:k_actual]
+        self.last_knn = [(float(scores[int(i)]), int(self._ids[int(i)])) for i in order]
+        return list(self.last_knn)
+
+    def reset(self) -> None:
+        self._raw = []
+        self._ids = []
+        self._id_to_row = {}
+        self._next_id = 0
+        self.last_knn = []
+
+    def _init_vector_store(self, embedding_dim: int) -> None:
+        del embedding_dim
+        self.reset()
+
+    def is_empty(self) -> bool:
+        return len(self._ids) == 0
+
+    def size(self) -> int:
+        return len(self._ids)
+
+
 def _make_eviction_policy(classes: Dict[str, Any], name: str, cache_size: int) -> Any:
     policy = name.lower()
     kwargs = {"max_size": int(cache_size), "watermark": 1.0, "eviction_percentage": 1.0 / max(1, int(cache_size))}
@@ -685,6 +765,119 @@ def run_vcache_policy(
             _base_record(
                 dataset=dataset,
                 method="vcache",
+                seed=seed,
+                param=float(config.delta),
+                request_index=i,
+                example=example,
+                nearest=nearest_entry,
+                decision="exploit" if is_hit else "explore",
+                returned_response=returned,
+                correctness=correctness,
+                would_correct=would_correct,
+                similarity_score=sim,
+                method_score=sim,
+                latency=latency,
+                llm_calls=inference_engine.calls - llm_before,
+                online_judge_calls=similarity_evaluator.calls - online_judge_before,
+                evaluation_judge_calls=eval_calls,
+                cache_size=config.cache_size,
+                embedding_model=embedding_model,
+                judge_name=judge.name,
+                stream_hash=stream_hash,
+            )
+        )
+
+    shutdown = getattr(vcache.vcache_policy, "shutdown", None)
+    if callable(shutdown):
+        shutdown()
+    evict_shutdown = getattr(eviction_policy, "shutdown", None)
+    if callable(evict_shutdown):
+        evict_shutdown()
+    add_cumulative_fields(records)
+    return records
+
+
+def run_vcache_whitened_policy(
+    stream: Sequence[StreamExample],
+    *,
+    model: OursModel,
+    config: VCacheAdapterConfig,
+    dataset: str,
+    seed: int,
+    judge: EquivalenceJudge,
+    embedding_model: str,
+    stream_hash: str,
+) -> List[Dict[str, Any]]:
+    """Run vCache's adaptive delta policy with whitened-cosine scoring instead of raw cosine.
+
+    The _WhitenedCosineVectorDB replaces the cosine dot-product in vCache's vector store
+    with the pre-trained whitened-cosine model score.  vCache's VerifiedDecisionPolicy
+    (adaptive delta) then operates entirely in whitened-cosine score space.
+    config.delta is used as the initial error budget (same semantics as vCache's delta).
+    """
+    random.seed(int(seed))
+    np.random.seed(int(seed))
+    classes = _load_official_vcache(config.repo_path)
+    registry = _Registry(stream, judge.mode)
+    embedding_engine = _PrecomputedEmbeddingEngine(registry)
+    inference_engine = _DatasetInferenceEngine(registry)
+    metadata_storage = _LoggingMetadataStorage(registry)
+    vector_db = _WhitenedCosineVectorDB(max_capacity=max(1, int(config.cache_size) + 1), model=model)
+    similarity_evaluator = _JudgeSimilarityEvaluator(judge)
+    eviction_policy = _make_eviction_policy(classes, config.eviction_policy, config.cache_size)
+
+    vcache_config = classes["VCacheConfig"](
+        inference_engine=inference_engine,
+        embedding_engine=embedding_engine,
+        vector_db=vector_db,
+        embedding_metadata_storage=metadata_storage,
+        similarity_evaluator=similarity_evaluator,
+        eviction_policy=eviction_policy,
+    )
+    policy = _make_policy(classes, config.policy, config.delta)
+    vcache = classes["VCache"](vcache_config, policy)
+    if config.sync_updates:
+        _synchronize_vcache_policy(vcache.vcache_policy)
+
+    records: List[Dict[str, Any]] = []
+    for i, example in enumerate(stream):
+        wrapped_prompt = registry.wrap_prompt(example, i)
+        id_set = registry.id_set_for(example, i)
+        llm_before = inference_engine.calls
+        online_judge_before = similarity_evaluator.calls
+        t0 = time.perf_counter()
+        is_hit, returned, _response_metadata, nn_metadata = vcache.infer_with_cache_info(
+            prompt=wrapped_prompt,
+            system_prompt=None,
+            id_set=id_set,
+        )
+        latency = time.perf_counter() - t0
+        sim = None
+        nearest_embedding_id = None
+        if getattr(vector_db, "last_knn", None):
+            sim = float(vector_db.last_knn[0][0])
+            nearest_embedding_id = int(vector_db.last_knn[0][1])
+        nearest_example = registry.example_for_metadata(nn_metadata)
+        if nearest_example is None:
+            nearest_example = registry.example_for_embedding_id(nearest_embedding_id)
+        nearest_entry = None
+        if nearest_example is not None:
+            nearest_entry = type(
+                "NearestEntry",
+                (),
+                {"example": nearest_example},
+            )()
+        correctness, would_correct, eval_calls = _evaluate_decision(
+            judge,
+            example,
+            nearest_entry,
+            is_hit=bool(is_hit),
+            returned_response=returned,
+        )
+        records.append(
+            _base_record(
+                dataset=dataset,
+                method="vcache_whitened_cosine",
                 seed=seed,
                 param=float(config.delta),
                 request_index=i,

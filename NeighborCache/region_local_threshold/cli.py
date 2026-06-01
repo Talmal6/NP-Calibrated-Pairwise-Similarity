@@ -1764,6 +1764,22 @@ def _build_configured_methods(
             if not quiet:
                 print(f"[WARN] Could not load PrecomputedCosine: {exc}")
 
+    if args.include_vcache_baseline:
+        if X_cos is None:
+            if not quiet:
+                print("[WARN] --include_vcache_baseline set but cosine_to_anchor is unavailable; skipping vCache(original)")
+        else:
+            try:
+                from np_bench.methods.precomputed_cosine import PrecomputedCosineMethod
+                vcache_method = PrecomputedCosineMethod()
+                vcache_method.name = "vCache(original)"
+                methods["vCache(original)"] = vcache_method
+                if not quiet:
+                    print("[INFO] Added vCache(original) competitor using precomputed nearest-neighbor cosine")
+            except Exception as exc:
+                if not quiet:
+                    print(f"[WARN] Could not load vCache(original) baseline: {exc}")
+
     if args.regional_weighted_ensemble:
         try:
             from np_bench.methods.regional_weighted_ensemble import (
@@ -2657,6 +2673,15 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         action="store_true",
         default=False,
         help="Add explicit scalar-score baseline using precomputed cosine_to_anchor.",
+    )
+    ap.add_argument(
+        "--include_vcache_baseline",
+        action="store_true",
+        default=False,
+        help=(
+            "Add vCache(original) as a competitor row using the original vCache nearest-neighbor "
+            "cosine decision score, NP-calibrated on this benchmark split."
+        ),
     )
     ap.add_argument(
         "--cos_affine_grouping",

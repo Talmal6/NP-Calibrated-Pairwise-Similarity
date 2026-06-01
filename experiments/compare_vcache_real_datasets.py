@@ -14,11 +14,11 @@ import numpy as np
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib-neighborcache")
 
-from .dataset_stream import DatasetInfo, StreamExample, _to_embedding, load_dataset_stream
+from .dataset_stream import DatasetInfo, StreamExample, _to_embedding
 from .equivalence import EquivalenceJudge
 from .online_policies import ExactVectorCache, run_cosine_policy, run_ours_policy, train_ours_model
 from .online_mined_ours import load_eval_stream_from_pairs_dir, train_online_mined_model
-from .vcache_adapter import VCacheAdapterConfig, VCacheUnavailableError, run_vcache_policy
+from .vcache_adapter import VCacheAdapterConfig, VCacheUnavailableError, run_vcache_policy, run_vcache_whitened_policy
 from .vcache_metrics import (
     RAW_DECISION_FIELDS,
     RAW_DECISION_MINIMAL_FIELDS,
@@ -56,6 +56,12 @@ LEARNED_METHODS = {
     "ours_tiny_mlp": "Tiny MLP",
 }
 
+# vCache policy with our learned scorer swapped in for raw cosine.
+VCACHE_WHITENED_METHODS = {
+    "vcache_whitened_cosine": "WhitenedCosine",
+    "vcache_weighted_ensemble": "WeightedEnsemble",
+}
+
 
 @dataclass
 class RealDatasetSpec:
@@ -63,6 +69,7 @@ class RealDatasetSpec:
     display_name: str
     local_path: str
     hf_id: str
+    hf_data_file: str
     prompt_key: str
     id_key: str
     cluster_key: str
@@ -77,6 +84,7 @@ SPECS = {
         display_name="SemCacheLMArena",
         local_path="NeighborCache/data/SemBenchmarkLmArena_local",
         hf_id="vCache/SemBenchmarkLmArena",
+        hf_data_file="train.parquet",
         prompt_key="prompt",
         id_key="id",
         cluster_key="ID_Set",
@@ -84,14 +92,41 @@ SPECS = {
         default_pairwise_path="NeighborCache/data/arena_emb_gte.npz",
         pairwise_mode="anchor_qid",
     ),
+    "SemCacheClassification": RealDatasetSpec(
+        canonical_name="SemCacheClassification",
+        display_name="SemCacheClassification",
+        local_path="NeighborCache/data/SemBenchmarkClassification_train.npz",
+        hf_id="vCache/SemBenchmarkClassification",
+        hf_data_file="train.parquet",
+        prompt_key="prompt",
+        id_key="id",
+        cluster_key="response_llama_3_8b",
+        default_response_key="response_llama_3_8b",
+        default_pairwise_path=None,
+        pairwise_mode="from_stream_annotations",
+    ),
     "SemCacheSearchQueries": RealDatasetSpec(
         canonical_name="SemCacheSearchQueries",
         display_name="SemCacheSearchQueries",
         local_path="NeighborCache/data/SemBenchmarkSearchQueries_train.npz",
         hf_id="vCache/SemBenchmarkSearchQueries",
+        hf_data_file="train.parquet",
         prompt_key="prompt",
         id_key="id",
         cluster_key="id_set",
+        default_response_key="response_llama_3_8b",
+        default_pairwise_path=None,
+        pairwise_mode="from_stream_annotations",
+    ),
+    "SemCacheCombo": RealDatasetSpec(
+        canonical_name="SemCacheCombo",
+        display_name="SemCacheCombo",
+        local_path="NeighborCache/data/SemBenchmarkCombo_train.npz",
+        hf_id="vCache/SemBenchmarkCombo",
+        hf_data_file="train.parquet",
+        prompt_key="prompt",
+        id_key="id",
+        cluster_key="ID_Set",
         default_response_key="response_llama_3_8b",
         default_pairwise_path=None,
         pairwise_mode="from_stream_annotations",
@@ -138,7 +173,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--methods",
         nargs="+",
         default=["vcache", "cosine", "ours_whitened_hadamard", "ours_weighted_ensemble"],
-        choices=["vcache", "cosine", *sorted(LEARNED_METHODS)],
+        choices=["vcache", "cosine", *sorted(LEARNED_METHODS), *sorted(VCACHE_WHITENED_METHODS)],
     )
     ap.add_argument("--delta_values", nargs="+", type=float, default=DEFAULT_DELTAS)
     ap.add_argument("--thresholds", nargs="+", type=float, default=DEFAULT_THRESHOLDS)
@@ -251,6 +286,144 @@ def _load_hf_saved_stream(
     return examples, info
 
 
+def _hf_token() -> Optional[str]:
+    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    token_path = Path.home() / ".cache" / "huggingface" / "token"
+    if token is None and token_path.exists():
+        token = token_path.read_text(encoding="utf-8").strip()
+    return token or None
+
+
+def _hf_hub_download_cached_first(dataset_id: str, data_file: str) -> Path:
+    try:
+        from huggingface_hub import hf_hub_download
+    except Exception as exc:
+        raise ImportError("Loading official vCache parquet files requires `huggingface_hub`") from exc
+
+    token = _hf_token()
+    try:
+        return Path(
+            hf_hub_download(
+                repo_id=dataset_id,
+                filename=data_file,
+                repo_type="dataset",
+                token=token,
+                local_files_only=True,
+            )
+        )
+    except Exception:
+        return Path(hf_hub_download(repo_id=dataset_id, filename=data_file, repo_type="dataset", token=token))
+
+
+def _arrow_to_numpy(column: Any) -> np.ndarray:
+    try:
+        import pyarrow as pa
+    except Exception as exc:
+        raise ImportError("Loading official vCache parquet files requires `pyarrow`") from exc
+
+    if pa.types.is_string(column.type) or pa.types.is_large_string(column.type):
+        values: List[Any] = []
+        for chunk in column.chunks:
+            if pa.types.is_string(chunk.type):
+                chunk = chunk.cast(pa.large_string())
+            values.extend(chunk.to_pylist())
+        return np.asarray(values, dtype=object)
+
+    arr = column.combine_chunks()
+    if pa.types.is_fixed_size_list(arr.type):
+        values = arr.values.to_numpy(zero_copy_only=False)
+        return values.reshape(len(arr), arr.type.list_size)
+    if pa.types.is_list(arr.type) or pa.types.is_large_list(arr.type):
+        return np.asarray(arr.to_pylist())
+    return arr.to_numpy(zero_copy_only=False)
+
+
+def _string_or_empty(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and np.isnan(value):
+        return ""
+    return str(value)
+
+
+def _cluster_or_none(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, float) and np.isnan(value):
+        return None
+    text = str(value)
+    return text if text else None
+
+
+def _load_hf_parquet_stream(
+    spec: RealDatasetSpec,
+    *,
+    embedding_key: str,
+    response_key: str,
+    seed: int,
+    limit: Optional[int],
+) -> Tuple[List[StreamExample], DatasetInfo]:
+    try:
+        import pyarrow.parquet as pq
+    except Exception as exc:
+        raise ImportError("Loading official vCache parquet files requires `pyarrow`") from exc
+
+    parquet_path = _hf_hub_download_cached_first(spec.hf_id, spec.hf_data_file)
+    schema = pq.read_schema(parquet_path)
+    available = set(schema.names)
+    required = [spec.prompt_key, spec.id_key, spec.cluster_key, embedding_key, response_key]
+    missing = [column for column in dict.fromkeys(required) if column not in available]
+    if missing:
+        raise ValueError(
+            f"{spec.canonical_name} missing official parquet columns {missing}. "
+            f"Available columns={sorted(available)}"
+        )
+
+    selected = list(dict.fromkeys([*required, "dataset_name"]))
+    selected = [column for column in selected if column in available]
+    table = pq.read_table(parquet_path, columns=selected)
+    arrays = {column: _arrow_to_numpy(table[column]) for column in selected}
+
+    n = int(np.asarray(arrays[spec.prompt_key]).shape[0])
+    rng = np.random.default_rng(int(seed))
+    order = rng.permutation(n)
+    if limit is not None:
+        order = order[: int(limit)]
+
+    examples: List[StreamExample] = []
+    for out_i, row_i_raw in enumerate(order):
+        row_i = int(row_i_raw)
+        emb = _to_embedding(arrays[embedding_key][row_i], key=embedding_key)
+        metadata = {
+            key: arrays[key][row_i]
+            for key in [spec.id_key, spec.cluster_key, "dataset_name"]
+            if key in arrays
+        }
+        examples.append(
+            StreamExample(
+                id=_string_or_empty(arrays[spec.id_key][row_i]) if spec.id_key in arrays else str(out_i),
+                prompt=_string_or_empty(arrays[spec.prompt_key][row_i]),
+                gold_response=_string_or_empty(arrays[response_key][row_i]) if response_key in arrays else "",
+                cluster=_cluster_or_none(arrays[spec.cluster_key][row_i]) if spec.cluster_key in arrays else None,
+                metadata=metadata,
+                embedding=emb,
+            )
+        )
+
+    info = DatasetInfo(
+        path=f"hf://{spec.hf_id}/{spec.hf_data_file} ({parquet_path})",
+        name=spec.canonical_name,
+        n_examples=len(examples),
+        prompt_key=spec.prompt_key,
+        response_key=response_key,
+        id_key=spec.id_key,
+        cluster_key=spec.cluster_key,
+        embedding_key=embedding_key,
+        warnings=[],
+    )
+    return examples, info
+
+
 def load_real_stream(
     spec: RealDatasetSpec,
     *,
@@ -269,21 +442,12 @@ def load_real_stream(
             seed=seed,
             limit=limit,
         )
-    if path.exists():
-        return load_dataset_stream(
-            str(path),
-            prompt_key=spec.prompt_key,
-            response_key=response_key,
-            id_key=spec.id_key,
-            cluster_key=spec.cluster_key,
-            embedding_key=embedding_key,
-            seed=seed,
-            shuffle=True,
-            limit=limit,
-        )
-    raise FileNotFoundError(
-        f"Official dataset {spec.canonical_name} not found locally at {path}. "
-        f"Expected Hugging Face dataset: {spec.hf_id}. Download it before running, or place it at {path}."
+    return _load_hf_parquet_stream(
+        spec,
+        embedding_key=embedding_key,
+        response_key=response_key,
+        seed=seed,
+        limit=limit,
     )
 
 
@@ -586,6 +750,57 @@ def run_subset_methods(
                 _tag_records(rows, dataset=dataset, subset_name=subset_name)
                 raw.extend(rows)
 
+    for method in methods:
+        if method in VCACHE_WHITENED_METHODS:
+            method_name = VCACHE_WHITENED_METHODS[method]
+            for alpha in args.target_budgets:
+                if args.ours_calibration_source == "online_mined":
+                    if not args.online_pairs_dir:
+                        raise SystemExit("--ours_calibration_source online_mined requires --online_pairs_dir")
+                    model, _diag = train_online_mined_model(
+                        pairs_dir=Path(args.online_pairs_dir),
+                        method_name=method_name,
+                        alpha=float(alpha),
+                        seed=args.seed,
+                        pair_feature="hadamard",
+                    )
+                else:
+                    model = train_ours_model(
+                        pairwise_data=str(pairwise_path),
+                        method_name=method_name,
+                        feature_key="emb",
+                        label_key="label",
+                        alt_feature_key="cosine_to_anchor",
+                        n_train=args.ours_n_train,
+                        n_calib=args.ours_n_calib,
+                        seed=args.seed,
+                        alpha=float(alpha),
+                        pair_feature="hadamard",
+                    )
+                judge = EquivalenceJudge(mode="cluster")
+                try:
+                    rows = run_vcache_whitened_policy(
+                        subset,
+                        model=model,
+                        config=VCacheAdapterConfig(
+                            delta=float(alpha),
+                            repo_path=args.vcache_repo_path,
+                            policy=args.vcache_policy,
+                            sync_updates=not args.vcache_async_updates,
+                            cache_size=args.cache_size,
+                            eviction_policy=args.eviction_policy,
+                        ),
+                        dataset=dataset,
+                        seed=args.seed,
+                        judge=judge,
+                        embedding_model=embedding_model_name,
+                        stream_hash=stream_digest,
+                    )
+                except VCacheUnavailableError as exc:
+                    raise SystemExit(f"vCache baseline cannot run: {exc}") from exc
+                _tag_records(rows, dataset=dataset, subset_name=subset_name)
+                raw.extend(rows)
+
     if "cosine" in methods:
         for threshold in args.thresholds:
             judge = EquivalenceJudge(mode="cluster")
@@ -693,6 +908,57 @@ def iter_subset_method_runs(
                     stream_hash=stream_digest,
                 )
                 _annotate_learned_rows(rows, model, diag, args.ours_calibration_source)
+                _tag_records(rows, dataset=dataset, subset_name=subset_name)
+                yield method, float(alpha), rows
+
+    for method in methods:
+        if method in VCACHE_WHITENED_METHODS:
+            method_name = VCACHE_WHITENED_METHODS[method]
+            for alpha in args.target_budgets:
+                if args.ours_calibration_source == "online_mined":
+                    if not args.online_pairs_dir:
+                        raise SystemExit("--ours_calibration_source online_mined requires --online_pairs_dir")
+                    model, _diag = train_online_mined_model(
+                        pairs_dir=Path(args.online_pairs_dir),
+                        method_name=method_name,
+                        alpha=float(alpha),
+                        seed=args.seed,
+                        pair_feature="hadamard",
+                    )
+                else:
+                    model = train_ours_model(
+                        pairwise_data=str(pairwise_path),
+                        method_name=method_name,
+                        feature_key="emb",
+                        label_key="label",
+                        alt_feature_key="cosine_to_anchor",
+                        n_train=args.ours_n_train,
+                        n_calib=args.ours_n_calib,
+                        seed=args.seed,
+                        alpha=float(alpha),
+                        pair_feature="hadamard",
+                    )
+                judge = EquivalenceJudge(mode="cluster")
+                try:
+                    rows = run_vcache_whitened_policy(
+                        subset,
+                        model=model,
+                        config=VCacheAdapterConfig(
+                            delta=float(alpha),
+                            repo_path=args.vcache_repo_path,
+                            policy=args.vcache_policy,
+                            sync_updates=not args.vcache_async_updates,
+                            cache_size=args.cache_size,
+                            eviction_policy=args.eviction_policy,
+                        ),
+                        dataset=dataset,
+                        seed=args.seed,
+                        judge=judge,
+                        embedding_model=embedding_model_name,
+                        stream_hash=stream_digest,
+                    )
+                except VCacheUnavailableError as exc:
+                    raise SystemExit(f"vCache baseline cannot run: {exc}") from exc
                 _tag_records(rows, dataset=dataset, subset_name=subset_name)
                 yield method, float(alpha), rows
 
