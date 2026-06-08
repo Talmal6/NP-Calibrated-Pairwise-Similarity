@@ -13,3 +13,4 @@ __pycache__/
 NeighborCache/models/
 results
 logs
+*/results/
