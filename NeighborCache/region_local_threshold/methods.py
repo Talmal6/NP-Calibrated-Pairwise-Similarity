@@ -12,17 +12,21 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from np_bench.methods import get_default_methods
+from np_bench.methods import get_default_methods, make_streaming_whitened_methods
 
 
 _VALID_INPUT_SPACES = {"embedding", "scalar_score", "mixed", "text_pair"}
 
 
-def build_methods() -> Dict[str, Any]:
+def build_methods(*, include_streaming: bool = False) -> Dict[str, Any]:
     methods: Dict[str, Any] = {}
     for method in get_default_methods():
         name = str(getattr(method, "name", type(method).__name__))
         methods[name] = method
+    if include_streaming:
+        for method in make_streaming_whitened_methods():
+            name = str(getattr(method, "name", type(method).__name__))
+            methods[name] = method
     return methods
 
 

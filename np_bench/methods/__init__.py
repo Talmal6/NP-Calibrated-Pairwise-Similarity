@@ -16,6 +16,7 @@ from .separation import ProjectedSeparationScoreMethod, SeparationScoreMethod
 
 # Main method
 from .whitened_cosine import WhitenedCosineMethod
+from .streaming_whitening import StreamingWhitening, StreamingWhitenedCosineMethod
 
 # Ensemble
 from .weighted_ensemble import WeightedEnsembleMethod
@@ -63,15 +64,39 @@ def _dedupe_by_name(methods: list[OnlineBaseMethod]) -> list[OnlineBaseMethod]:
     return out
 
 
-def _make_main_whitened_method() -> OnlineBaseMethod:
+def _make_whitened_method(name: str, whitening_type: str) -> OnlineBaseMethod:
     return WhitenedCosineMethod(
-        name="WhitenedCosine",
+        name=name,
         eps=1e-6,
         rel_eps=1e-6,
         max_rank=128,
         rank_mode="explained_variance",
         explained_variance=0.99,
+        whitening_type=whitening_type,  # type: ignore[arg-type]
     )
+
+
+def _make_main_whitened_method() -> OnlineBaseMethod:
+    return _make_whitened_method("PCAWhitenedCosine", "zca")
+
+
+def _make_whitened_variant_methods() -> list[OnlineBaseMethod]:
+    return [
+        _make_main_whitened_method(),
+        _make_whitened_method("PCAWhitenedCosine_PCA", "pca"),
+        _make_whitened_method("PCAWhitenedCosine_ZCAcor", "zca_cor"),
+        _make_whitened_method("PCAWhitenedCosine_PCAcor", "pca_cor"),
+    ]
+
+
+def make_streaming_whitened_methods() -> list[OnlineBaseMethod]:
+    """Return opt-in streaming whitening variants without changing defaults."""
+    return [
+        StreamingWhitenedCosineMethod(name="StreamingPCAWhitenedCosine", whitening_type="zca"),
+        StreamingWhitenedCosineMethod(name="StreamingPCAWhitenedCosine_PCA", whitening_type="pca"),
+        StreamingWhitenedCosineMethod(name="StreamingPCAWhitenedCosine_ZCAcor", whitening_type="zca_cor"),
+        StreamingWhitenedCosineMethod(name="StreamingPCAWhitenedCosine_PCAcor", whitening_type="pca_cor"),
+    ]
 
 
 def _make_ensemble_judges(
@@ -155,8 +180,8 @@ def get_default_methods(
         CosineMethod(),
         AndBoxHCMethod(),
         HadamardCosineMethod(),
-        _make_main_whitened_method(),
     ]
+    methods.extend(_make_whitened_variant_methods())
 
     if include_optional:
         MahalanobisDeltaMethod = _optional_class("mahalanobis_delta", "MahalanobisDeltaMethod")
@@ -202,6 +227,8 @@ __all__ = [
     "LogisticRegressionMethod",
     "LDAMethod",
     "WhitenedCosineMethod",
+    "StreamingWhitening",
+    "StreamingWhitenedCosineMethod",
     "WeightedEnsembleMethod",
     "RandomForestEnsembleMethod",
     "TinyMLPMethod",
@@ -214,4 +241,5 @@ __all__ = [
     "CANONICAL_ABLATIONS",
     "AblationMode",
     "get_default_methods",
+    "make_streaming_whitened_methods",
 ]

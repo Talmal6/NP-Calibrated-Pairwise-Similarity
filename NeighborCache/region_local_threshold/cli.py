@@ -18,6 +18,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from np_bench.utils import make_run_dir, save_csv_rows, save_json
+from np_bench.methods.faiss_backed import (
+    FAISS_SUFFIX,
+    PairContext,
+    build_faiss_variant,
+    is_faiss_variant_name,
+    source_name_for_faiss,
+)
 from .io_helpers import resolve_npz_path, load_npz, resolve_features
 from .io_helpers import resolve_text_pairs, resolve_train_pairwise_cosine
 from .methods import build_methods, needs_weights
@@ -62,6 +69,263 @@ def _concat_indices(parts: List[np.ndarray]) -> np.ndarray:
     if not valid:
         return np.array([], dtype=np.int64)
     return np.concatenate(valid).astype(np.int64, copy=False)
+
+
+def _npz_float_matrix(ds: Dict[str, Any], key: str, n_rows: int) -> Optional[np.ndarray]:
+    if key not in ds:
+        return None
+    try:
+        arr = np.asarray(ds[key], dtype=np.float32)
+    except (TypeError, ValueError):
+        return None
+    if arr.ndim != 2 or arr.shape[0] != int(n_rows) or arr.shape[1] <= 0:
+        return None
+    return arr
+
+
+def _optional_row_ids(ds: Dict[str, Any], n_rows: int) -> Optional[np.ndarray]:
+    for key in (
+        "anchor_id",
+        "anchor_ids",
+        "anchor_qid",
+        "anchor_doc_id",
+        "candidate_id",
+        "doc_id",
+        "region_id",
+    ):
+        if key not in ds:
+            continue
+        arr = np.asarray(ds[key])
+        if arr.ndim >= 1 and arr.shape[0] == int(n_rows):
+            return arr.reshape(-1)
+    return None
+
+
+def _sampled_hadamard_match(
+    X_main: np.ndarray,
+    query: np.ndarray,
+    anchor: np.ndarray,
+    *,
+    max_rows: int = 4096,
+) -> bool:
+    X = np.asarray(X_main)
+    q = np.asarray(query)
+    a = np.asarray(anchor)
+    if X.ndim != 2 or q.ndim != 2 or a.ndim != 2:
+        return False
+    if q.shape != a.shape or X.shape[0] != q.shape[0] or X.shape[1] != q.shape[1]:
+        return False
+
+    n = int(X.shape[0])
+    if n <= 0:
+        return False
+    if n > max_rows:
+        rng = np.random.default_rng(0)
+        idx = np.sort(rng.choice(n, size=int(max_rows), replace=False))
+    else:
+        idx = np.arange(n, dtype=np.int64)
+    prod = (q[idx].astype(np.float32, copy=False) * a[idx].astype(np.float32, copy=False))
+    return bool(np.allclose(np.asarray(X[idx], dtype=np.float32), prod, rtol=1e-4, atol=1e-4))
+
+
+def _resolve_faiss_pair_context(
+    *,
+    ds: Dict[str, Any],
+    X_main: np.ndarray,
+    region_id: np.ndarray,
+    args: argparse.Namespace,
+    generated_query: Optional[np.ndarray],
+    generated_anchor: Optional[np.ndarray],
+    abs_diff_only: bool,
+) -> PairContext:
+    n_rows = int(X_main.shape[0])
+    if generated_query is not None and generated_anchor is not None:
+        residual_active = bool(args.use_delta_vec or args.use_abs_diff or abs_diff_only)
+        features_clean = bool(args.hadamard_preprocess and not residual_active and not args.normalize_data)
+        reason = ""
+        if residual_active:
+            reason = "residual/abs-diff features break clean q*anchor Hadamard factorization"
+        elif args.normalize_data:
+            reason = "row-wise normalization changed X_main after Hadamard construction"
+        return PairContext(
+            query=np.asarray(generated_query, dtype=np.float32),
+            anchor=np.asarray(generated_anchor, dtype=np.float32),
+            anchor_ids=np.asarray(region_id).reshape(-1),
+            features_are_hadamard=features_clean,
+            reason=reason,
+            source="generated_hadamard_region_anchor",
+        )
+
+    query = _npz_float_matrix(ds, "query_emb", n_rows)
+    anchor = _npz_float_matrix(ds, "anchor_emb", n_rows)
+    if query is None or anchor is None:
+        return PairContext(
+            query=None,
+            anchor=None,
+            features_are_hadamard=False,
+            reason="missing query_emb/anchor_emb and no generated pair context",
+            source="unavailable",
+        )
+
+    clean = bool(not args.normalize_data and _sampled_hadamard_match(X_main, query, anchor))
+    reason = "" if clean else "current X_main is not the exact query_emb*anchor_emb Hadamard product"
+    return PairContext(
+        query=query,
+        anchor=anchor,
+        anchor_ids=_optional_row_ids(ds, n_rows),
+        features_are_hadamard=clean,
+        reason=reason,
+        source="npz_query_emb_anchor_emb",
+    )
+
+
+def _faiss_static_ineligible_reason(name: str, args: argparse.Namespace, scope: str) -> Optional[str]:
+    if name.startswith("WeightedEnsemble") or name == "RegionalWeightedEnsemble":
+        return "WeightedEnsemble uses per-judge H0-CDF normalization, so it is not a single bilinear/IP score"
+    if name.startswith("RandomForestEnsemble"):
+        return "RandomForest ensemble is nonlinear and not a single bilinear/IP score"
+    if name.startswith("MahalanobisDelta"):
+        return "MahalanobisDelta is an L2-style distance and is not handled by this IndexFlatIP pass"
+    if "Separation" in name:
+        return "separation methods are left ineligible in this pass"
+    if name in {"XGBoost", "Tiny MLP", "BGE Reranker", "Online(refit)", "CosineAffineCalib"}:
+        return "method is not an exact fitted pair bilinear/IP scorer"
+    if name == "StabilizedWhitenedCosine" and str(getattr(args, "swc_mode", "global")) != "global":
+        return "StabilizedWhitenedCosine mutates by fit_region in this swc_mode, so a single wrapper would be stale"
+    if str(getattr(args, "local_fit_mode", "pooled")) == "per_region" and scope == "local":
+        return "local_fit_mode=per_region refits methods inside evaluation; FAISS variants are skipped for this pass"
+    return None
+
+
+def _register_faiss_variants(
+    *,
+    methods: Dict[str, Any],
+    method_names: List[str],
+    pair_context: PairContext,
+    X_main: np.ndarray,
+    X_cos: Optional[np.ndarray],
+    args: argparse.Namespace,
+    trial: int,
+    seed: int,
+    scope: str,
+    report_rows: List[Dict[str, Any]],
+) -> None:
+    if not bool(getattr(args, "include_faiss_variants", False)):
+        return
+
+    original_names = [name for name in method_names if name in methods and not is_faiss_variant_name(name)]
+    added = 0
+    for name in original_names:
+        faiss_name = f"{name}{FAISS_SUFFIX}"
+        static_reason = _faiss_static_ineligible_reason(name, args, scope)
+        if static_reason is not None:
+            eligible = False
+            reason = static_reason
+            scorer = None
+        else:
+            scorer, result = build_faiss_variant(
+                source_name=name,
+                source_method=methods[name],
+                pair_context=pair_context,
+                X_main=X_main,
+                X_cos=X_cos,
+            )
+            eligible = bool(result.eligible)
+            reason = str(result.reason)
+
+        report_rows.append(
+            {
+                "trial": int(trial),
+                "seed": int(seed),
+                "scope": str(scope),
+                "method": str(name),
+                "faiss_method": str(faiss_name),
+                "eligible": bool(eligible),
+                "reason": reason,
+                "pair_context_source": str(pair_context.source),
+                "pair_context_reason": str(pair_context.reason),
+                "features_are_hadamard": bool(pair_context.features_are_hadamard),
+                "pair_context_rows": int(pair_context.n_rows),
+            }
+        )
+        if scorer is None or not eligible:
+            continue
+        methods[faiss_name] = scorer
+        method_names.append(faiss_name)
+        added += 1
+
+    if added > 0:
+        print(f"  faiss_variants: added={added} source={pair_context.source}")
+    else:
+        print("  faiss_variants: none eligible")
+
+
+def _append_faiss_equivalence_rows(
+    trial_rows: List[Dict[str, Any]],
+    *,
+    methods: Dict[str, Any],
+    alpha: float,
+    scope: str,
+    out_rows: List[Dict[str, Any]],
+) -> None:
+    by_key: Dict[tuple[Any, ...], Dict[str, Any]] = {}
+    for row in trial_rows:
+        method = str(row.get("method", ""))
+        key = (
+            int(row.get("trial", -1)),
+            int(row.get("seed", -1)),
+            method,
+            str(row.get("region_key", "")),
+            str(row.get("tau_mode", "")),
+            str(row.get("comparison_scope", "")),
+        )
+        by_key[key] = row
+
+    for faiss_row in trial_rows:
+        faiss_name = str(faiss_row.get("method", ""))
+        if not is_faiss_variant_name(faiss_name):
+            continue
+        source_name = source_name_for_faiss(faiss_name)
+        source_key = (
+            int(faiss_row.get("trial", -1)),
+            int(faiss_row.get("seed", -1)),
+            source_name,
+            str(faiss_row.get("region_key", "")),
+            str(faiss_row.get("tau_mode", "")),
+            str(faiss_row.get("comparison_scope", "")),
+        )
+        source_row = by_key.get(source_key)
+        if source_row is None:
+            continue
+
+        scorer = methods.get(faiss_name)
+        out_rows.append(
+            {
+                "trial": int(faiss_row.get("trial", -1)),
+                "seed": int(faiss_row.get("seed", -1)),
+                "scope": str(scope),
+                "alpha": float(alpha),
+                "source_method": source_name,
+                "faiss_method": faiss_name,
+                "tau_mode": str(faiss_row.get("tau_mode", "")),
+                "comparison_scope": str(faiss_row.get("comparison_scope", "")),
+                "max_score_diff": float(getattr(scorer, "diagnostic_max_abs_diff", float("nan"))),
+                "scored_rows": int(getattr(scorer, "diagnostic_count", 0)),
+                "rank_agreement": bool(getattr(scorer, "diagnostic_rank_agreement", False)),
+                "dTPR": float(faiss_row.get("micro_tpr", float("nan")))
+                - float(source_row.get("micro_tpr", float("nan"))),
+                "dFPR": float(faiss_row.get("micro_fpr", float("nan")))
+                - float(source_row.get("micro_fpr", float("nan"))),
+                "dMacroTPR": float(faiss_row.get("macro_tpr", float("nan")))
+                - float(source_row.get("macro_tpr", float("nan"))),
+                "dMacroFPR": float(faiss_row.get("macro_fpr", float("nan")))
+                - float(source_row.get("macro_fpr", float("nan"))),
+                "dTrainTPR": float(faiss_row.get("train_tpr", float("nan")))
+                - float(source_row.get("train_tpr", float("nan"))),
+                "dTrainFPR": float(faiss_row.get("train_fpr", float("nan")))
+                - float(source_row.get("train_fpr", float("nan"))),
+            }
+        )
 
 
 def _build_global_split_from_local_regions(
@@ -1518,6 +1782,28 @@ def _whitened_cosine_kwargs_from_args(args: argparse.Namespace) -> Dict[str, Any
     return out
 
 
+WHITENED_COSINE_VARIANTS = {
+    "PCAWhitenedCosine": "zca",
+    "PCAWhitenedCosine_PCA": "pca",
+    "PCAWhitenedCosine_ZCAcor": "zca_cor",
+    "PCAWhitenedCosine_PCAcor": "pca_cor",
+}
+
+
+def _configured_whitened_cosine_methods_from_args(args: argparse.Namespace) -> Dict[str, Any]:
+    from np_bench.methods.whitened_cosine import WhitenedCosineMethod
+
+    kwargs = _whitened_cosine_kwargs_from_args(args)
+    return {
+        name: WhitenedCosineMethod(
+            name=name,
+            whitening_type=whitening_type,  # type: ignore[arg-type]
+            **kwargs,
+        )
+        for name, whitening_type in WHITENED_COSINE_VARIANTS.items()
+    }
+
+
 def _tiny_mlp_kwargs_from_args(args: argparse.Namespace) -> Dict[str, Any]:
     mapping = {
         "tiny_mlp_activation": str,
@@ -1623,7 +1909,7 @@ def _build_configured_methods(
     X_text: Optional[np.ndarray],
     quiet: bool = False,
 ) -> Dict[str, Any]:
-    methods = build_methods()
+    methods = build_methods(include_streaming=bool(getattr(args, "include_streaming_whitening", False)))
     has_xgb = "XGBoost" in methods
     use_precomputed_cosine = bool(args.hadamard_preprocess and X_cos is not None)
 
@@ -1638,10 +1924,7 @@ def _build_configured_methods(
                 print(f"[WARN] Could not route Cosine baseline to PrecomputedCosine: {exc}")
 
     try:
-        from np_bench.methods.whitened_cosine import WhitenedCosineMethod
-        methods["PCAWhitenedCosine"] = WhitenedCosineMethod(
-            **_whitened_cosine_kwargs_from_args(args)
-        )
+        methods.update(_configured_whitened_cosine_methods_from_args(args))
     except Exception:
         pass
 
@@ -2411,6 +2694,12 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help="Optional method selector for OCATS baselines. Default keeps existing behavior.",
     )
     ap.add_argument(
+        "--include_streaming_whitening",
+        action="store_true",
+        default=False,
+        help="Opt in to StreamingWhitenedCosineMethod variants in the offline benchmark method list.",
+    )
+    ap.add_argument(
         "--local_fit_mode",
         type=str,
         default="pooled",
@@ -2682,6 +2971,12 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
             "Add vCache(original) as a competitor row using the original vCache nearest-neighbor "
             "cosine decision score, NP-calibrated on this benchmark split."
         ),
+    )
+    ap.add_argument(
+        "--include_faiss_variants",
+        action="store_true",
+        default=False,
+        help="Add exact factorized FAISS IndexFlatIP variants for eligible fitted pair scorers.",
     )
     ap.add_argument(
         "--cos_affine_grouping",
@@ -3026,6 +3321,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     )
 
     abs_diff_only = bool(args.use_abs_diff and not args.hadamard_preprocess)
+    generated_pair_query: Optional[np.ndarray] = None
+    generated_pair_anchor: Optional[np.ndarray] = None
     if abs_diff_only:
         print(
             "[INFO] --use_abs_diff enabled without --hadamard_preprocess: "
@@ -3043,7 +3340,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             raise ValueError(
                 f"--hadamard_preprocess requires embedding-like X_main with shape (N,D), D>1; got {X_main.shape}"
             )
-        X_main, X_cos_had = _build_hadamard_features(
+        had_out = _build_hadamard_features(
             X_main,
             region_id,
             strategy=args.hadamard_anchor_strategy,
@@ -3051,7 +3348,9 @@ def main(argv: Optional[List[str]] = None) -> None:
             use_delta_vec=args.use_delta_vec,
             use_abs_diff=args.use_abs_diff,
             abs_diff_only=abs_diff_only,
+            return_pair_matrices=True,
         )
+        X_main, X_cos_had, generated_pair_query, generated_pair_anchor = had_out
         X_cos = X_cos_had
         if abs_diff_only:
             feat_key = f"{feat_key}+absdiff_only"
@@ -3077,6 +3376,16 @@ def main(argv: Optional[List[str]] = None) -> None:
         # This is applied once before splitting so every method sees the same input space.
         X_main = _l2_normalize_rows(X_main)
         print("[INFO] Applied row-wise L2 normalization to X_main")
+
+    faiss_pair_context = _resolve_faiss_pair_context(
+        ds=ds,
+        X_main=X_main,
+        region_id=region_id,
+        args=args,
+        generated_query=generated_pair_query,
+        generated_anchor=generated_pair_anchor,
+        abs_diff_only=abs_diff_only,
+    )
 
     if X_main.shape[0] != y.shape[0] or X_main.shape[0] != region_id.shape[0]:
         raise ValueError(
@@ -3109,6 +3418,15 @@ def main(argv: Optional[List[str]] = None) -> None:
     print(f"use_delta_vec={bool(args.use_delta_vec)}")
     print(f"use_abs_diff={bool(args.use_abs_diff)}")
     print(f"normalize_data={bool(args.normalize_data)}")
+    print(f"include_faiss_variants={bool(args.include_faiss_variants)}")
+    if args.include_faiss_variants:
+        print(
+            "faiss_pair_context: "
+            f"source={faiss_pair_context.source} "
+            f"available={bool(faiss_pair_context.available)} "
+            f"features_are_hadamard={bool(faiss_pair_context.features_are_hadamard)} "
+            f"reason={faiss_pair_context.reason or 'ok'}"
+        )
     print(f"filter_policy={args.filter_policy}")
     if args.filter_policy == "ambiguous_only":
         print(f"ambiguous_range=[{args.ambiguous_cos_min}, {args.ambiguous_cos_max}]")
@@ -3190,6 +3508,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     optuna_trial_rows: List[Dict[str, Any]] = []
     optuna_candidate_rows: List[Dict[str, Any]] = []
     optuna_best_rows: List[Dict[str, Any]] = []
+    faiss_eligibility_rows: List[Dict[str, Any]] = []
+    faiss_equivalence_rows: List[Dict[str, Any]] = []
 
     base_args = args
 
@@ -3717,6 +4037,20 @@ def main(argv: Optional[List[str]] = None) -> None:
                     reason_one_line = reason.splitlines()[0][:240]
                     print(f"[WARN] BGE Reranker running in fallback mode: {reason_one_line}")
 
+            _register_faiss_variants(
+                methods=methods,
+                method_names=method_names,
+                pair_context=faiss_pair_context,
+                X_main=X_main,
+                X_cos=X_cos,
+                args=args,
+                trial=trial,
+                seed=seed,
+                scope="global",
+                report_rows=faiss_eligibility_rows,
+            )
+            configured_methods_last = method_names[:]
+
             # Persist trial-wise ensemble weights for auditability.
             if "WeightedEnsemble" in methods and hasattr(methods["WeightedEnsemble"], "meta_w"):
                 we = methods["WeightedEnsemble"]
@@ -3749,6 +4083,13 @@ def main(argv: Optional[List[str]] = None) -> None:
                 region_key=args.region_key,
                 region_id=region_id,
                 failures=failures,
+            )
+            _append_faiss_equivalence_rows(
+                trial_rows,
+                methods=methods,
+                alpha=float(args.alpha),
+                scope="global",
+                out_rows=faiss_equivalence_rows,
             )
 
             if run_ocats_baselines:
@@ -4387,6 +4728,20 @@ def main(argv: Optional[List[str]] = None) -> None:
                     reason_one_line = reason.splitlines()[0][:240]
                     print(f"[WARN] BGE Reranker running in fallback mode: {reason_one_line}")
 
+            _register_faiss_variants(
+                methods=methods,
+                method_names=method_names,
+                pair_context=faiss_pair_context,
+                X_main=X_main,
+                X_cos=X_cos,
+                args=args,
+                trial=trial,
+                seed=seed,
+                scope="local",
+                report_rows=faiss_eligibility_rows,
+            )
+            configured_methods_last = method_names[:]
+
             # Evaluate methods
             local_eval_meta: Dict[str, Any] = {}
             trial_rows = evaluate_methods(
@@ -4420,6 +4775,13 @@ def main(argv: Optional[List[str]] = None) -> None:
                 failures=failures,
                 tau_cluster_id_by_rid=tau_cluster_id_by_rid,
                 trial_meta=local_eval_meta,
+            )
+            _append_faiss_equivalence_rows(
+                trial_rows,
+                methods=methods,
+                alpha=float(args.alpha),
+                scope="local",
+                out_rows=faiss_equivalence_rows,
             )
 
             if args.tau_mode == "cluster_local":
@@ -4969,6 +5331,27 @@ def main(argv: Optional[List[str]] = None) -> None:
             run_dir / "optuna_best.json",
             {"rows": optuna_best_rows},
         )
+    if args.include_faiss_variants:
+        save_csv_rows(
+            run_dir / "faiss_eligibility_report.csv",
+            faiss_eligibility_rows,
+            fieldnames=[
+                "trial", "seed", "scope", "method", "faiss_method",
+                "eligible", "reason",
+                "pair_context_source", "pair_context_reason",
+                "features_are_hadamard", "pair_context_rows",
+            ],
+        )
+        save_csv_rows(
+            run_dir / "faiss_equivalence_report.csv",
+            faiss_equivalence_rows,
+            fieldnames=[
+                "trial", "seed", "scope", "alpha",
+                "source_method", "faiss_method", "tau_mode", "comparison_scope",
+                "max_score_diff", "scored_rows", "rank_agreement",
+                "dTPR", "dFPR", "dMacroTPR", "dMacroFPR", "dTrainTPR", "dTrainFPR",
+            ],
+        )
     save_csv_rows(
         run_dir / "weighted_ensemble_meta_weights.csv",
         weighted_ensemble_meta_rows,
@@ -5019,6 +5402,11 @@ def main(argv: Optional[List[str]] = None) -> None:
             "train_pair_cosine_source": train_pair_cosine_source,
             "cos_affine_calib": bool(args.cos_affine_calib),
             "precomputed_cosine": bool(args.precomputed_cosine),
+            "include_faiss_variants": bool(args.include_faiss_variants),
+            "faiss_pair_context_source": str(faiss_pair_context.source),
+            "faiss_pair_context_available": bool(faiss_pair_context.available),
+            "faiss_pair_context_features_are_hadamard": bool(faiss_pair_context.features_are_hadamard),
+            "faiss_pair_context_reason": str(faiss_pair_context.reason),
             "cos_affine_grouping": args.cos_affine_grouping,
             "cos_affine_n_clusters": int(args.cos_affine_n_clusters),
             "regional_weighted_ensemble": bool(args.regional_weighted_ensemble),

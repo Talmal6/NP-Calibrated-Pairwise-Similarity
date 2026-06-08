@@ -122,6 +122,32 @@ def test_vcache_dataset_preset_enables_vcache_competitor() -> None:
     assert "--include_vcache_baseline" in args.extra_cli_arg
 
 
+def test_include_faiss_variants_reaches_cli_args() -> None:
+    args = submitter.parse_args(["--datasets", "wildchat_final", "--include-faiss-variants"])
+
+    submitter._apply_competitor_presets(args)
+
+    assert "--include_faiss_variants" in args.extra_cli_arg
+
+
+def test_include_streaming_whitening_reaches_cli_args() -> None:
+    args = submitter.parse_args(["--datasets", "wildchat_final", "--include-streaming-whitening"])
+
+    submitter._apply_competitor_presets(args)
+
+    assert "--include_streaming_whitening" in args.extra_cli_arg
+
+
+def test_submit_rejects_tmp_exp_root_by_default() -> None:
+    args = submitter.parse_args(["--submit", "--exp-root", "/tmp/not_shared"])
+
+    with pytest.raises(ValueError, match="under /tmp"):
+        submitter._validate_exp_root_for_submit(Path("/tmp/not_shared"), args)
+
+    args.allow_tmp_exp_root = True
+    submitter._validate_exp_root_for_submit(Path("/tmp/not_shared"), args)
+
+
 def test_missing_npz_raises_with_full_list(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         registry,
@@ -228,4 +254,8 @@ def test_aggregate_tables_use_seed_outputs(tmp_path: Path) -> None:
     assert rows[0]["n"] == "2"
     assert float(rows[0]["micro_tpr_mean"]) == pytest.approx(0.60)
     assert float(rows[0]["micro_fpr_mean"]) == pytest.approx(0.05)
-    assert (tmp_path / "exp" / "final_tables" / "wildchat_final.md").exists()
+    md_table = tmp_path / "exp" / "final_tables" / "wildchat_final.md"
+    assert md_table.exists()
+    md_text = md_table.read_text(encoding="utf-8")
+    assert "time_ms (95% CI)" in md_text
+    assert "10.0 +/- 0.0" in md_text

@@ -1,64 +1,18 @@
-from typing import Literal, Optional
+from typing import Optional
 
 import numpy as np
 
 from .base import OnlineBaseMethod
-
-
-RankMode = Literal["fixed", "explained_variance", "threshold"]
+from .whitening_core import (
+    RankMode,
+    WhiteningType,
+    _select_rank as _select_rank,
+    compute_whitening_matrix,
+)
 
 
 def _l2_normalize(X: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     return X / (np.linalg.norm(X, axis=1, keepdims=True) + eps)
-
-
-def _select_rank(
-    eigvals_desc: np.ndarray,
-    *,
-    n: int,
-    d: int,
-    max_rank: Optional[int],
-    rank_mode: RankMode,
-    explained_variance: float,
-    abs_eps: float,
-    rel_eps: float,
-) -> int:
-    if max_rank is not None and max_rank <= 0:
-        raise ValueError("max_rank must be positive or None.")
-    if not 0.0 < explained_variance <= 1.0:
-        raise ValueError("explained_variance must be in (0, 1].")
-
-    rank_cap = min(max(n - 1, 1), d)
-    if max_rank is not None:
-        rank_cap = min(rank_cap, max_rank)
-
-    if eigvals_desc.size == 0:
-        return 1
-
-    max_eigval = max(float(eigvals_desc[0]), 0.0)
-    threshold = max(abs_eps, rel_eps * max_eigval)
-    valid = eigvals_desc > threshold
-
-    if not np.any(valid):
-        return 1
-
-    valid_vals = eigvals_desc[valid]
-    valid_count = int(valid_vals.size)
-
-    if rank_mode == "fixed":
-        k = rank_cap
-    elif rank_mode == "threshold":
-        k = valid_count
-    elif rank_mode == "explained_variance":
-        total = float(np.sum(valid_vals))
-        if total <= 0.0:
-            return 1
-        ratios = np.cumsum(valid_vals) / total
-        k = int(np.searchsorted(ratios, explained_variance) + 1)
-    else:
-        raise ValueError(f"Unknown rank_mode: {rank_mode!r}")
-
-    return max(1, min(k, valid_count, rank_cap))
 
 
 def _inv_sqrt_cov(
@@ -77,46 +31,17 @@ def _inv_sqrt_cov(
     retained PCA subspace. Directions outside the retained subspace are zeroed
     out rather than amplified.
     """
-    if X.ndim != 2:
-        raise ValueError(f"X must have shape (n, d). Got {X.shape}.")
-    if X.shape[0] == 0:
-        raise ValueError("X must contain at least one row.")
-
-    n, d = X.shape
-    Xf = np.asarray(X, dtype=np.float64)
-    Xc = Xf - Xf.mean(axis=0, keepdims=True)
-    cov = (Xc.T @ Xc) / max(1, n - 1)
-    cov = 0.5 * (cov + cov.T)
-
-    eigvals, eigvecs = np.linalg.eigh(cov)
-    eigvals_desc = np.maximum(eigvals[::-1], 0.0)
-    eigvecs_desc = eigvecs[:, ::-1]
-
-    k = _select_rank(
-        eigvals_desc,
-        n=n,
-        d=d,
+    W, _, _ = compute_whitening_matrix(
+        X,
+        whitening_type="zca",
+        abs_eps=abs_eps,
+        rel_eps=rel_eps,
         max_rank=max_rank,
         rank_mode=rank_mode,
         explained_variance=explained_variance,
-        abs_eps=abs_eps,
-        rel_eps=rel_eps,
+        shrinkage=0.0,
     )
-
-    top_vals = eigvals_desc[:k]
-    top_vecs = eigvecs_desc[:, :k]
-
-    max_eigval = max(float(eigvals_desc[0]), 0.0)
-    threshold = max(abs_eps, rel_eps * max_eigval)
-    mask = top_vals > threshold
-
-    if not np.any(mask):
-        return np.zeros((d, d), dtype=np.float64)
-
-    top_vals = top_vals[mask]
-    top_vecs = top_vecs[:, mask]
-    inv_sqrt = 1.0 / np.sqrt(top_vals)
-    return (top_vecs * inv_sqrt[None, :]) @ top_vecs.T
+    return W
 
 
 class WhitenedCosineMethod(OnlineBaseMethod):
@@ -130,16 +55,47 @@ class WhitenedCosineMethod(OnlineBaseMethod):
         rank_mode: RankMode = "explained_variance",
         explained_variance: float = 0.99,
         norm_eps: float = 1e-12,
+        whitening_type: WhiteningType = "zca",
+        shrinkage: float = 0.0,
+        abs_eps: Optional[float] = None,
+        pca_whiten_abs_eps: Optional[float] = None,
+        pca_whiten_rel_eps: Optional[float] = None,
+        pca_whiten_max_rank: Optional[int] = None,
+        pca_whiten_rank_mode: Optional[RankMode] = None,
+        pca_whiten_explained_variance: Optional[float] = None,
+        pca_whiten_norm_eps: Optional[float] = None,
     ):
         super().__init__()
         self.name = name
+        if abs_eps is not None:
+            eps = abs_eps
+        if pca_whiten_abs_eps is not None:
+            eps = pca_whiten_abs_eps
+        if pca_whiten_rel_eps is not None:
+            rel_eps = pca_whiten_rel_eps
+        if pca_whiten_max_rank is not None:
+            max_rank = pca_whiten_max_rank
+        if pca_whiten_rank_mode is not None:
+            rank_mode = pca_whiten_rank_mode
+        if pca_whiten_explained_variance is not None:
+            explained_variance = pca_whiten_explained_variance
+        if pca_whiten_norm_eps is not None:
+            norm_eps = pca_whiten_norm_eps
+
+        if whitening_type not in {"zca", "pca", "zca_cor", "pca_cor"}:
+            raise ValueError(f"Unknown whitening_type: {whitening_type!r}")
         self.eps = float(eps)
+        self.abs_eps = self.eps
         self.rel_eps = float(rel_eps)
         self.max_rank = max_rank
         self.rank_mode = rank_mode
         self.explained_variance = float(explained_variance)
         self.norm_eps = float(norm_eps)
+        self.whitening_type = whitening_type
+        self.shrinkage = float(shrinkage)
         self.W = None
+        self.mean_ = None
+        self.selected_rank_ = 0
 
     def fit(
         self,
@@ -162,13 +118,15 @@ class WhitenedCosineMethod(OnlineBaseMethod):
             raise ValueError("H0_train and H1_train must both contain at least one row.")
 
         all_data = np.concatenate([H0_train, H1_train], axis=0)
-        self.W = _inv_sqrt_cov(
+        self.W, self.mean_, self.selected_rank_ = compute_whitening_matrix(
             all_data,
+            whitening_type=self.whitening_type,
             abs_eps=self.eps,
             rel_eps=self.rel_eps,
             max_rank=self.max_rank,
             rank_mode=self.rank_mode,
             explained_variance=self.explained_variance,
+            shrinkage=self.shrinkage,
         )
         self.mem_H0 = H0_train.copy()
         self.mem_H1 = H1_train.copy()
@@ -181,12 +139,19 @@ class WhitenedCosineMethod(OnlineBaseMethod):
         if self.mem_H0 is None or self.mem_H1 is None:
             raise RuntimeError("Missing stored training data. Call fit(...) first.")
 
-        WH0 = self.mem_H0 @ self.W
-        WH1 = self.mem_H1 @ self.W
+        if self.whitening_type == "zca":
+            WH0 = self.mem_H0 @ self.W
+            WH1 = self.mem_H1 @ self.W
+        else:
+            WH0 = self.mem_H0 @ self.W.T
+            WH1 = self.mem_H1 @ self.W.T
         mu0 = WH0.mean(axis=0)
         mu1 = WH1.mean(axis=0)
         d_w = mu1 - mu0
-        self.w = self.W @ d_w
+        if self.whitening_type == "zca":
+            self.w = self.W @ d_w
+        else:
+            self.w = self.W.T @ d_w
         self.b = -0.5 * float((mu0 + mu1) @ d_w)
 
     def refit(self) -> None:
@@ -201,3 +166,8 @@ class WhitenedCosineMethod(OnlineBaseMethod):
         WA = _l2_normalize(A @ self.W.T, eps=self.norm_eps)
         WB = _l2_normalize(B @ self.W.T, eps=self.norm_eps)
         return np.sum(WA * WB, axis=1)
+
+    def linear_form(self) -> tuple[str, np.ndarray, float]:
+        if self.w is None:
+            raise RuntimeError("WhitenedCosineMethod.linear_form() called before fit().")
+        return ("hadamard_linear", np.asarray(self.w, dtype=np.float64), float(self.b))

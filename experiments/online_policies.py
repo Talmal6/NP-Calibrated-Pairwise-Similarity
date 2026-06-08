@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
+from np_bench.thresholding import select_np_threshold
 
 from .dataset_stream import StreamExample
 from .equivalence import EquivalenceJudge
@@ -274,20 +275,7 @@ def make_pair_feature(a: np.ndarray, b: np.ndarray, mode: str) -> np.ndarray:
 
 
 def _select_np_tau(scores_h0: np.ndarray, alpha: float, tie_mode: str = "ge") -> float:
-    s = np.asarray(scores_h0, dtype=np.float64).reshape(-1)
-    if s.size == 0:
-        raise ValueError("empty H0 calibration scores")
-    uniq, counts = np.unique(s, return_counts=True)
-    n = int(s.size)
-    cumsum = np.cumsum(counts)
-    for i, tau in enumerate(uniq):
-        if tie_mode == "gt":
-            k = int(n - cumsum[i])
-        else:
-            k = int(n - (cumsum[i - 1] if i > 0 else 0))
-        if k / max(1, n) <= float(alpha):
-            return float(tau)
-    return float("inf")
+    return select_np_threshold(scores_h0, alpha=alpha, tie_mode=tie_mode, guardrail="none")
 
 
 def _get_method_by_name(name: str) -> Any:

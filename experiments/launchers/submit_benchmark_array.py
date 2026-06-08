@@ -122,6 +122,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Also include the official vCache SemBenchmark datasets registered by this launcher.",
     )
+    add(
+        "--include-faiss-variants",
+        action="store_true",
+        help="Pass --include_faiss_variants to each benchmark CLI task.",
+    )
+    add(
+        "--include-streaming-whitening",
+        action="store_true",
+        help="Pass --include_streaming_whitening so offline smoke runs include opt-in streaming whitening methods.",
+    )
     add("--embedders", nargs="+", default=["default"], help="Embedder registry keys.")
     add("--seeds", nargs="+", type=int, default=list(range(20)), help="Seed values.")
     add("--alphas", nargs="+", type=float, default=[0.01, 0.03, 0.05, 0.10], help="Alpha values.")
@@ -145,6 +155,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     add("--extra-cli-arg", action="append", default=[], help="Extra single argument passed to the benchmark CLI.")
     add("--exp-root", default=str(Path("NeighborCache/results") / f"benchmark_{_timestamp()}"), help="Experiment output root.")
+    add(
+        "--allow-tmp-exp-root",
+        action="store_true",
+        help="Allow --submit with --exp-root under /tmp. Use only if /tmp is shared by SLURM compute nodes.",
+    )
     add("--conda-env", default=os.environ.get("CONDA_ENV_NAME", "ec"), help="Conda environment name.")
     add("--python-bin", default=os.environ.get("PYTHON_BIN"), help="Explicit Python executable.")
     add("--partition", default="", help="SLURM partition.")
@@ -230,6 +245,27 @@ def _abs_path(path: str | Path) -> Path:
     return p if p.is_absolute() else (REPO_ROOT / p).resolve()
 
 
+def _is_under_tmp(path: Path) -> bool:
+    resolved = Path(path).resolve()
+    tmp = Path("/tmp").resolve()
+    return resolved == tmp or tmp in resolved.parents
+
+
+def _validate_exp_root_for_submit(exp_root: Path, args: argparse.Namespace) -> None:
+    if not args.submit:
+        return
+    if bool(getattr(args, "allow_tmp_exp_root", False)):
+        return
+    if not _is_under_tmp(exp_root):
+        return
+    raise ValueError(
+        "--submit with --exp-root under /tmp is unsafe on SLURM because compute nodes often "
+        "cannot see the submit-node /tmp tree or open stdout/stderr paths there. Use a shared "
+        "filesystem path, for example NeighborCache/results/streaming_smoke, or pass "
+        "--allow-tmp-exp-root only if /tmp is shared on this cluster."
+    )
+
+
 def _download_inputs(datasets: Sequence[str], embedders: Sequence[str], python_bin: str) -> None:
     errors: list[str] = []
     for dataset in datasets:
@@ -279,6 +315,10 @@ def _append_extra_cli_arg_once(args: argparse.Namespace, flag: str) -> None:
 def _apply_competitor_presets(args: argparse.Namespace) -> None:
     if any(dataset in registry.VCACHE_ORIGINAL_DATASETS for dataset in args.datasets):
         _append_extra_cli_arg_once(args, "--include_vcache_baseline")
+    if bool(getattr(args, "include_faiss_variants", False)):
+        _append_extra_cli_arg_once(args, "--include_faiss_variants")
+    if bool(getattr(args, "include_streaming_whitening", False)):
+        _append_extra_cli_arg_once(args, "--include_streaming_whitening")
 
 
 def _filter_tasks(tasks: list[BenchmarkTask], filter_text: str) -> list[BenchmarkTask]:
@@ -525,6 +565,19 @@ def _print_job_table(jobs: list[BenchmarkJob]) -> None:
             f"{job.job_id}\t{first.dataset}\t{first.embedder}\t{len(job.tasks)}\t"
             f"{_job_seed_text(job)}\t{first.alpha:.4g}\t{first.tau_mode}\t{job.output_dir}"
         )
+
+
+def _print_method_preview(*, include_streaming: bool = False) -> None:
+    try:
+        from NeighborCache.region_local_threshold.methods import build_methods
+    except Exception as exc:
+        print(f"Configured methods: unavailable ({exc})")
+        return
+
+    methods = build_methods(include_streaming=include_streaming)
+    print("Configured methods:")
+    for name in methods:
+        print(f"  - {name}")
 
 
 def _task_label(task: BenchmarkTask) -> str:
@@ -816,6 +869,7 @@ def _write_markdown_table(path: Path, rows: Sequence[dict[str, Any]]) -> None:
         "embedder", "alpha", "rank", "method", "n", "valid_rate",
         "micro_tpr (95% CI)", "micro_fpr (95% CI)",
         "macro_tpr (95% CI)", "macro_fpr (95% CI)", "train_n",
+        "time_ms (95% CI)",
     ]
     lines = [
         f"# {_md_escape(rows[0]['dataset_name'] if rows else path.stem)}",
@@ -836,6 +890,7 @@ def _write_markdown_table(path: Path, rows: Sequence[dict[str, Any]]) -> None:
             _format_ci(row, "macro_tpr"),
             _format_ci(row, "macro_fpr"),
             _format_float(row.get("train_samples_needed_mean"), digits=1),
+            _format_ci(row, "time_ms", digits=1),
         ]
         lines.append("| " + " | ".join(str(value) for value in values) + " |")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -1090,6 +1145,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.streaming = False
     python_bin = _resolve_python(args.conda_env, args.python_bin)
     exp_root = _abs_path(args.exp_root)
+    _validate_exp_root_for_submit(exp_root, args)
     if not args.dry_run:
         _download_inputs(args.datasets, args.embedders, python_bin)
     all_tasks = build_main_suite(
@@ -1118,6 +1174,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     }
     if args.dry_run:
         _print_job_table(jobs)
+        _print_method_preview(include_streaming=bool(args.include_streaming_whitening))
         if jobs:
             print("\nSample command:")
             print(_job_preview(jobs[0], python_bin))

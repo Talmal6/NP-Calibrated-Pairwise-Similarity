@@ -7,6 +7,7 @@ from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+from np_bench.thresholding import select_np_threshold
 
 from .methods import method_input_space, needs_weights, needs_seed, try_fit_method
 from .splits import RegionSplit, GlobalSplit
@@ -196,39 +197,13 @@ def _select_tau(
     guardrail: str,
     guardrail_delta: float,
 ) -> float:
-    s = np.asarray(scores, dtype=np.float64).reshape(-1)
-    if s.size == 0:
-        raise ValueError("empty calibration scores")
-
-    if guardrail == "none":
-        # Tie-aware empirical NP selection: choose the smallest threshold
-        # whose empirical FPR (under tie_mode) is <= alpha.
-        uniq, counts = np.unique(s, return_counts=True)
-        n = int(s.size)
-        cumsum = np.cumsum(counts)
-        for i, tau in enumerate(uniq):
-            if tie_mode == "gt":
-                k = int(n - cumsum[i])
-            else:
-                k = int(n - (cumsum[i - 1] if i > 0 else 0))
-            if (k / max(1, n)) <= alpha:
-                return float(tau)
-        return float("inf")
-
-    uniq, counts = np.unique(s, return_counts=True)
-    n = int(s.size)
-    cumsum = np.cumsum(counts)
-
-    for i, tau in enumerate(uniq):
-        if tie_mode == "gt":
-            k = int(n - cumsum[i])
-        else:
-            k = int(n - (cumsum[i - 1] if i > 0 else 0))
-        ucb = _fpr_ucb(k, n, method=guardrail, delta=guardrail_delta)
-        if ucb <= alpha:
-            return float(tau)
-
-    return float("inf")
+    return select_np_threshold(
+        scores,
+        alpha=alpha,
+        tie_mode=tie_mode,
+        guardrail=guardrail,
+        guardrail_delta=guardrail_delta,
+    )
 
 
 def _l2_rows(X: np.ndarray, eps: float = 1e-12) -> np.ndarray:
@@ -298,7 +273,14 @@ def _score_method_with_routing(
     X_cos_slice: Optional[np.ndarray],
     X_text_slice: Optional[np.ndarray],
     region_ids_slice: Optional[np.ndarray] = None,
+    row_indices_slice: Optional[np.ndarray] = None,
 ) -> np.ndarray:
+    score_with_indices = getattr(method, "score_with_indices", None)
+    if callable(score_with_indices):
+        if row_indices_slice is None:
+            raise ValueError(f"method={method_name} requires original row indices for paired scoring")
+        return score_with_indices(np.asarray(row_indices_slice, dtype=np.int64))
+
     space = method_input_space(method)
     needs_region_ids = bool(getattr(method, "requires_region_ids", False))
 
@@ -679,6 +661,7 @@ def evaluate_methods(
                         X_cos[h0_calib_idx_all] if X_cos is not None else None,
                         X_text[h0_calib_idx_all] if X_text is not None else None,
                         region_id[h0_calib_idx_all] if region_id is not None else None,
+                        row_indices_slice=h0_calib_idx_all,
                     ),
                     dtype=np.float32,
                 ).reshape(-1)
@@ -759,6 +742,7 @@ def evaluate_methods(
                             H0_cal_r,
                             X_cos[h0_cal_idx] if X_cos is not None and h0_cal_idx.size > 0 else None,
                             X_text[h0_cal_idx] if X_text is not None and h0_cal_idx.size > 0 else None,
+                            row_indices_slice=h0_cal_idx,
                         ),
                         dtype=np.float32,
                     ).reshape(-1)
@@ -951,6 +935,7 @@ def evaluate_methods(
                                 X_cos[h0_cal_idx] if X_cos is not None and h0_cal_idx.size > 0 else None,
                                 X_text[h0_cal_idx] if X_text is not None and h0_cal_idx.size > 0 else None,
                                 np.full(H0_cal_r.shape[0], int(rid), dtype=np.int64),
+                                row_indices_slice=h0_cal_idx,
                             ),
                             dtype=np.float32,
                         ).reshape(-1)
@@ -1031,6 +1016,7 @@ def evaluate_methods(
                         X_cos[s.H0_eval] if X_cos is not None else None,
                         X_text[s.H0_eval] if X_text is not None else None,
                         np.full(H0_ev.shape[0], int(rid), dtype=np.int64),
+                        row_indices_slice=s.H0_eval,
                     ),
                     dtype=np.float32,
                 ).reshape(-1)
@@ -1041,6 +1027,7 @@ def evaluate_methods(
                         X_cos[s.H1_eval] if X_cos is not None else None,
                         X_text[s.H1_eval] if X_text is not None else None,
                         np.full(H1_ev.shape[0], int(rid), dtype=np.int64),
+                        row_indices_slice=s.H1_eval,
                     ),
                     dtype=np.float32,
                 ).reshape(-1)
@@ -1064,6 +1051,7 @@ def evaluate_methods(
                         X_cos[h0_cal_idx] if X_cos is not None and h0_cal_idx.size > 0 else None,
                         X_text[h0_cal_idx] if X_text is not None and h0_cal_idx.size > 0 else None,
                         np.full(H0_cal_r.shape[0], int(rid), dtype=np.int64),
+                        row_indices_slice=h0_cal_idx,
                     ),
                     dtype=np.float32,
                 ).reshape(-1)
@@ -1074,6 +1062,7 @@ def evaluate_methods(
                         X_cos[h1_cal_idx] if X_cos is not None and h1_cal_idx.size > 0 else None,
                         X_text[h1_cal_idx] if X_text is not None and h1_cal_idx.size > 0 else None,
                         np.full(H1_cal_r.shape[0], int(rid), dtype=np.int64),
+                        row_indices_slice=h1_cal_idx,
                     ),
                     dtype=np.float32,
                 ).reshape(-1)
@@ -1344,6 +1333,7 @@ def evaluate_methods_global(
                         X_cos[h0_calib_eff_idx] if X_cos is not None else None,
                         X_text[h0_calib_eff_idx] if X_text is not None else None,
                         region_id[h0_calib_eff_idx] if region_id is not None else None,
+                        row_indices_slice=h0_calib_eff_idx,
                     ),
                     dtype=np.float32,
                 ).reshape(-1)
@@ -1395,6 +1385,7 @@ def evaluate_methods_global(
                         X_cos[gs.H0_eval] if X_cos is not None else None,
                         X_text[gs.H0_eval] if X_text is not None else None,
                         region_id[gs.H0_eval] if region_id is not None else None,
+                        row_indices_slice=gs.H0_eval,
                     ),
                     dtype=np.float32,
                 ).reshape(-1)
@@ -1405,6 +1396,7 @@ def evaluate_methods_global(
                         X_cos[gs.H1_eval] if X_cos is not None else None,
                         X_text[gs.H1_eval] if X_text is not None else None,
                         region_id[gs.H1_eval] if region_id is not None else None,
+                        row_indices_slice=gs.H1_eval,
                     ),
                     dtype=np.float32,
                 ).reshape(-1)
@@ -1463,6 +1455,7 @@ def evaluate_methods_global(
                         X_cos[h0_calib_eff_idx] if X_cos is not None else None,
                         X_text[h0_calib_eff_idx] if X_text is not None else None,
                         region_id[h0_calib_eff_idx] if region_id is not None else None,
+                        row_indices_slice=h0_calib_eff_idx,
                     ),
                     dtype=np.float32,
                 ).reshape(-1)
@@ -1473,6 +1466,7 @@ def evaluate_methods_global(
                         X_cos[h1_calib_eff_idx] if X_cos is not None else None,
                         X_text[h1_calib_eff_idx] if X_text is not None else None,
                         region_id[h1_calib_eff_idx] if region_id is not None else None,
+                        row_indices_slice=h1_calib_eff_idx,
                     ),
                     dtype=np.float32,
                 ).reshape(-1)
