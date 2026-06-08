@@ -743,6 +743,19 @@ class WhitenedCosineMethod(OnlineBaseMethod):
         """
         return self.score(H)
 
+    def linear_form(self) -> tuple[str, np.ndarray, float]:
+        self._check_is_fitted()
+        if self.resolved_ablation == "raw_cosine":
+            assert self.W is not None
+            return ("hadamard_linear", np.ones(self.W.shape[0], dtype=np.float64), 0.0)
+        if self.resolved_ablation == "current_whitened_cosine":
+            raise RuntimeError(
+                "current_whitened_cosine normalizes transformed merged features and is not a linear pair form"
+            )
+        if self.w is None or self.b is None:
+            raise RuntimeError("Linear ablation is missing w/b. Call fit(...) first.")
+        return ("hadamard_linear", np.asarray(self.w, dtype=np.float64), float(self.b))
+
     def score_pairs(self, A: np.ndarray, B: np.ndarray) -> np.ndarray:
         """
         Score raw embedding pairs.

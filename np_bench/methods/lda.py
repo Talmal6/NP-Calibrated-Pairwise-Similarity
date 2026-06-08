@@ -107,3 +107,15 @@ class LDAMethod(BaseMethod):
             raise RuntimeError("LDAMethod.score() called before fit().")
 
         return self.clf.decision_function(X).astype(np.float32)
+
+    def linear_form(self) -> tuple[str, np.ndarray, float]:
+        if self.clf is None:
+            raise RuntimeError("LDAMethod.linear_form() called before fit().")
+        coef = np.asarray(getattr(self.clf, "coef_", None), dtype=np.float64)
+        intercept = np.asarray(getattr(self.clf, "intercept_", [0.0]), dtype=np.float64).reshape(-1)
+        if coef.ndim == 2:
+            w = coef[0]
+        else:
+            w = coef.reshape(-1)
+        b = float(intercept[0]) if intercept.size else 0.0
+        return ("hadamard_linear", w, b)

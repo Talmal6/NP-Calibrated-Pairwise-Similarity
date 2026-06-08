@@ -38,6 +38,15 @@ METHOD_ALIASES = {
     "wcosine": "PCAWhitenedCosine",
     "whitenedcosine": "PCAWhitenedCosine",
     "pcawhitenedcosine": "PCAWhitenedCosine",
+    "w.cosine.pca": "PCAWhitenedCosine_PCA",
+    "wcosine_pca": "PCAWhitenedCosine_PCA",
+    "pcawhitenedcosine_pca": "PCAWhitenedCosine_PCA",
+    "w.cosine.zcacor": "PCAWhitenedCosine_ZCAcor",
+    "wcosine_zcacor": "PCAWhitenedCosine_ZCAcor",
+    "pcawhitenedcosine_zcacor": "PCAWhitenedCosine_ZCAcor",
+    "w.cosine.pcacor": "PCAWhitenedCosine_PCAcor",
+    "wcosine_pcacor": "PCAWhitenedCosine_PCAcor",
+    "pcawhitenedcosine_pcacor": "PCAWhitenedCosine_PCAcor",
     "mlp": "Tiny MLP",
     "tiny mlp": "Tiny MLP",
     "xgboost": "XGBoost",
@@ -52,8 +61,6 @@ def _normalize_method_name(name: str) -> str:
     if not text:
         raise ValueError("Method names in --methods must be non-empty")
     normalized = METHOD_ALIASES.get(text.lower(), text)
-    if normalized == "PCAWhitenedCosine":
-        return "WhitenedCosine"
     return normalized
 
 

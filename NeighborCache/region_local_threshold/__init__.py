@@ -5,7 +5,12 @@ from .methods import build_methods, try_fit_method, method_train_required
 from .splits import RegionSplit, GlobalSplit, split_indices_per_region, split_global
 from .evaluation import apply_threshold, evaluate_methods, evaluate_methods_global, aggregate_ranking
 from .display import print_trial_table, print_ranking
-from .cli import main
+
+
+def main(*args, **kwargs):
+    from .cli import main as _main
+
+    return _main(*args, **kwargs)
 
 __all__ = [
     "resolve_npz_path",

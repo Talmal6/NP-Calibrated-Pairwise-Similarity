@@ -32,3 +32,8 @@ class VectorWeightedMethod(BaseMethod):
         if self.w_normalized is None:
             raise ValueError("fit() must be called before score()")
         return (X @ self.w_normalized).astype(np.float32)
+
+    def linear_form(self) -> tuple[str, np.ndarray, float]:
+        if self.w_normalized is None:
+            raise RuntimeError("VectorWeightedMethod.linear_form() called before fit().")
+        return ("hadamard_linear", np.asarray(self.w_normalized, dtype=np.float64), 0.0)

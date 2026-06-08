@@ -41,3 +41,6 @@ class PrecomputedCosineMethod(BaseMethod):
         s = np.clip(s, -1.0, 1.0)
         s = np.nan_to_num(s, nan=-1.0, posinf=1.0, neginf=-1.0)
         return s.astype(np.float32, copy=False)
+
+    def linear_form(self) -> tuple[str]:
+        return ("pair_cosine",)

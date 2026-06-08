@@ -171,6 +171,11 @@ class StabilizedWhitenedCosineMethod(OnlineBaseMethod):
         s = X @ self.w + self.b
         return np.asarray(s, dtype=np.float32)
 
+    def linear_form(self) -> tuple[str, np.ndarray, float]:
+        if self.w is None:
+            raise RuntimeError("StabilizedWhitenedCosineMethod.linear_form() called before fit().")
+        return ("hadamard_linear", np.asarray(self.w, dtype=np.float64), float(self.b))
+
     def score_pairs(self, A: np.ndarray, B: np.ndarray) -> np.ndarray:
         """Whiten → L2-normalise → cosine on separate embedding pairs."""
         if self._is_fallback or self._V_k is None or self._W_inv_sqrt is None:

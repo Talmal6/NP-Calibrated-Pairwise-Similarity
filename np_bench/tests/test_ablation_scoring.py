@@ -48,15 +48,19 @@ class AblationScoringTest(unittest.TestCase):
 
         A_train = rng.normal(loc=-0.1, scale=1.0, size=(n_train, d)).astype(np.float32)
         B_train = rng.normal(loc=0.25, scale=1.0, size=(n_train, d)).astype(np.float32)
-        X_train = A_train * B_train
+        X0_train = A_train * B_train
+        X1_train = (
+            rng.normal(loc=0.2, scale=1.1, size=(n_train, d))
+            * rng.normal(loc=0.35, scale=0.9, size=(n_train, d))
+        ).astype(np.float32)
         X_eval = rng.normal(loc=0.05, scale=1.0, size=(n_eval, d)).astype(np.float32)
 
         methods = build_methods()
         pca_cos = methods["PCAWhitenedCosine"]
         pca_hadamard = methods["ablation:pca_whitened_hadamard_linear"]
 
-        pca_cos.fit(X_train, X_train)
-        pca_hadamard.fit(X_train, X_train)
+        pca_cos.fit(X0_train, X1_train)
+        pca_hadamard.fit(X0_train, X1_train)
 
         feature_scores_cos = np.asarray(pca_cos.score(X_eval), dtype=np.float64).reshape(-1)
         feature_scores_hadamard = np.asarray(pca_hadamard.score(X_eval), dtype=np.float64).reshape(-1)

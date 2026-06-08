@@ -190,6 +190,13 @@ class HadamardCosineMethod(OnlineBaseMethod):
             )
         return X @ self.w + self.b
 
+    def linear_form(self) -> tuple[str, np.ndarray, float]:
+        if self.w is None:
+            raise RuntimeError("HadamardCosineMethod.linear_form() called before fit().")
+        if self.normalize_pair_inputs:
+            raise RuntimeError("normalized pair-input HadamardCosine is not a clean q*anchor linear form")
+        return ("hadamard_linear", np.asarray(self.w, dtype=np.float64), float(self.b))
+
     def score_pairs(self, A: np.ndarray, B: np.ndarray) -> np.ndarray:
         if self.w is None:
             raise RuntimeError("Method is not fitted. Call fit(...) first.")
@@ -358,6 +365,13 @@ class StabilizedFisherHadamardMethod(OnlineBaseMethod):
                 f"X feature dimension mismatch: expected {self.w.shape[0]}, got {X.shape[1]}."
             )
         return X @ self.w + self.b
+
+    def linear_form(self) -> tuple[str, np.ndarray, float]:
+        if self.w is None:
+            raise RuntimeError("StabilizedFisherHadamardMethod.linear_form() called before fit().")
+        if self.normalize_pair_inputs:
+            raise RuntimeError("normalized pair-input FisherHadamard is not a clean q*anchor linear form")
+        return ("hadamard_linear", np.asarray(self.w, dtype=np.float64), float(self.b))
 
     def score_pairs(self, A: np.ndarray, B: np.ndarray) -> np.ndarray:
         if self.w is None:

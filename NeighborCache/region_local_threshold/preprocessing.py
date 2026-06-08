@@ -53,7 +53,8 @@ def _build_hadamard_features(
     use_delta_vec: bool = False,
     use_abs_diff: bool = False,
     abs_diff_only: bool = False,
-) -> tuple[np.ndarray, np.ndarray]:
+    return_pair_matrices: bool = False,
+) -> tuple[np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Build region-anchor features and cosine-to-anchor from feature vectors.
 
     Returns:
@@ -100,6 +101,8 @@ def _build_hadamard_features(
 
     # Keep cosine-to-anchor defined from the Hadamard term only.
     cos = np.sum(had, axis=1, keepdims=True).astype(np.float32, copy=False)
+    if return_pair_matrices:
+        return X_pair, cos, Xn, anchors
     return X_pair, cos
 
 
